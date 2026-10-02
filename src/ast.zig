@@ -1,0 +1,171 @@
+const std = @import("std");
+const token = @import("token.zig");
+
+const TokenIndex = u32;
+const NodeIndex = u32;
+
+pub const Node = union(enum) {
+    type_name: TypeName,
+    identifier: Identifier,
+    integer: IntegerLiteral,
+    string_lit: StringLiteral,
+    array_lit: ArrayLiteral,
+    infix: InfixExpression,
+    index_expr: IndexExpression,
+    prefix: Prefix,
+    func_lit: FunctionLiteral,
+    call: Call,
+    parameter: Parameter,
+    block: Block,
+    if_expr: If,
+};
+
+pub const TypeName = struct {
+    tkn_index: TokenIndex,
+};
+
+pub const Identifier = struct {
+    tkn_index: TokenIndex,
+};
+
+pub const IntegerLiteral = struct {
+    tkn_index: TokenIndex,
+    value: i64,
+};
+
+pub const StringLiteral = struct {
+    tkn_index: TokenIndex,
+};
+
+pub const ArrayLiteral = struct {
+    tkn_index: TokenIndex,
+    elements: NodeRange,
+};
+
+pub const InfixExpression = struct {
+    left: NodeIndex,
+    operator: TokenIndex,
+    right: NodeIndex,
+};
+
+pub const IndexExpression = struct {
+    tkn_index: TokenIndex,
+    left: NodeIndex,
+    idx: NodeIndex,
+};
+
+pub const Prefix = struct {
+    operator: TokenIndex,
+    right: NodeIndex,
+};
+
+pub const FunctionLiteral = struct {
+    tkn_index: TokenIndex, // The "fn" token
+    parameters: NodeRange,
+    return_type: ?NodeIndex,
+    body: NodeIndex // Block node
+};
+
+pub const Call = struct {
+    tkn_index: TokenIndex, // The "(" token
+    func: NodeIndex,
+    arguments: NodeRange,
+};
+
+pub const Parameter = struct {
+    name: TokenIndex,
+    type_expr: NodeIndex,
+};
+
+pub const Block = struct {
+    tkn_index: TokenIndex, // The "{" token
+    statements: NodeRange,
+};
+
+pub const If = struct {
+    tkn_index: TokenIndex, // The "if" token
+    condition: NodeIndex,
+    consequence: NodeIndex,
+    alternative: ?NodeIndex,
+};
+
+pub const NodeRange = struct {
+    start: u32,
+    len: u32,
+};
+
+pub const Ast = struct {
+    source: []const u8,
+    roots: NodeRange,
+    tokens: std.ArrayList(token.Token) = .empty,
+    nodes: std.ArrayList(Node) = .empty,
+    extra: std.ArrayList(NodeIndex) = .empty,
+
+    pub fn addNode(self: *Ast, allocator: std.mem.Allocator, node: Node) !NodeIndex {
+        const index: NodeIndex = @intCast(self.nodes.items.len);
+        try self.nodes.append(allocator, node);
+        return index;
+    }
+
+    pub fn addRange(self: *Ast, allocator: std.mem.Allocator, children: []const NodeIndex) !NodeRange {
+        const start: u32 = @intCast(self.extra.items.len);
+        try self.extra.appendSlice(allocator, children);
+        return NodeRange{ .start = start, .len = @intCast(children.len)};
+    }
+
+    pub fn tokenText(self: *const Ast, index: TokenIndex) []const u8 {
+        const tkn = self.tokens.items[index];
+        return self.source[tkn.byte_start..tkn.byte_end];
+    }
+
+    pub fn deinit(self: *Ast, allocator: std.mem.Allocator) void {
+        self.tokens.deinit(allocator);
+        self.nodes.deinit(allocator);
+        self.extra.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+test "infix node references its operands and operator" {
+    const allocator = std.testing.allocator;
+    const source = "2 + 3";
+
+    var ast: Ast = .{
+        .source = source,
+        .roots = .{ .start = 0, .len = 0 },
+    };
+    defer ast.deinit(allocator);
+
+    var lexer = token.Lexer.init(source);
+    while (true) {
+        const tkn = lexer.nextToken();
+        try ast.tokens.append(allocator, tkn);
+        if (tkn.type == .eof) break;
+    }
+
+    const left = try ast.addNode(allocator, .{
+        .integer = .{ .tkn_index = 0, .value = 2 },
+    });
+    const right = try ast.addNode(allocator, .{
+        .integer = .{ .tkn_index = 2, .value = 3 },
+    });
+    const expression = try ast.addNode(allocator, .{
+         .infix = .{ .left = left, .operator = 1, .right = right },
+    });
+
+    ast.roots = try ast.addRange(allocator, &.{expression});
+
+    const root_idx = ast.extra.items[ast.roots.start];
+    const infix = ast.nodes.items[root_idx].infix;
+
+    try std.testing.expectEqual(@as(u32, 1), ast.roots.len);
+    try std.testing.expectEqual(
+       @as(i64, 2),
+       ast.nodes.items[infix.left].integer.value,
+    );
+    try std.testing.expectEqual(
+       @as(i64, 3),
+       ast.nodes.items[infix.right].integer.value,
+    );
+    try std.testing.expectEqualStrings("+", ast.tokenText(infix.operator));
+}
