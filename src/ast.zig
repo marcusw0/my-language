@@ -21,24 +21,24 @@ pub const Node = union(enum) {
 };
 
 pub const TypeName = struct {
-    tkn_index: TokenIndex,
+    tok_index: TokenIndex,
 };
 
 pub const Identifier = struct {
-    tkn_index: TokenIndex,
+    tok_index: TokenIndex,
 };
 
 pub const IntegerLiteral = struct {
-    tkn_index: TokenIndex,
+    tok_index: TokenIndex,
     value: i64,
 };
 
 pub const StringLiteral = struct {
-    tkn_index: TokenIndex,
+    tok_index: TokenIndex,
 };
 
 pub const ArrayLiteral = struct {
-    tkn_index: TokenIndex,
+    tok_index: TokenIndex,
     elements: NodeRange,
 };
 
@@ -49,7 +49,7 @@ pub const InfixExpression = struct {
 };
 
 pub const IndexExpression = struct {
-    tkn_index: TokenIndex,
+    tok_index: TokenIndex,
     left: NodeIndex,
     idx: NodeIndex,
 };
@@ -60,14 +60,14 @@ pub const Prefix = struct {
 };
 
 pub const FunctionLiteral = struct {
-    tkn_index: TokenIndex, // The "fn" token
+    tok_index: TokenIndex, // The "fn" token
     parameters: NodeRange,
     return_type: ?NodeIndex,
     body: NodeIndex // Block node
 };
 
 pub const Call = struct {
-    tkn_index: TokenIndex, // The "(" token
+    tok_index: TokenIndex, // The "(" token
     func: NodeIndex,
     arguments: NodeRange,
 };
@@ -78,12 +78,12 @@ pub const Parameter = struct {
 };
 
 pub const Block = struct {
-    tkn_index: TokenIndex, // The "{" token
+    tok_index: TokenIndex, // The "{" token
     statements: NodeRange,
 };
 
 pub const If = struct {
-    tkn_index: TokenIndex, // The "if" token
+    tok_index: TokenIndex, // The "if" token
     condition: NodeIndex,
     consequence: NodeIndex,
     alternative: ?NodeIndex,
@@ -114,8 +114,8 @@ pub const Ast = struct {
     }
 
     pub fn tokenText(self: *const Ast, index: TokenIndex) []const u8 {
-        const tkn = self.tokens.items[index];
-        return self.source[tkn.byte_start..tkn.byte_end];
+        const tok = self.tokens.items[index];
+        return self.source[tok.byte_start..tok.byte_end];
     }
 
     pub fn deinit(self: *Ast, allocator: std.mem.Allocator) void {
@@ -138,16 +138,16 @@ test "infix node references its operands and operator" {
 
     var lexer = token.Lexer.init(source);
     while (true) {
-        const tkn = lexer.nextToken();
-        try ast.tokens.append(allocator, tkn);
-        if (tkn.type == .eof) break;
+        const tok = lexer.nextToken();
+        try ast.tokens.append(allocator, tok);
+        if (tok.type == .eof) break;
     }
 
     const left = try ast.addNode(allocator, .{
-        .integer = .{ .tkn_index = 0, .value = 2 },
+        .integer = .{ .tok_index = 0, .value = 2 },
     });
     const right = try ast.addNode(allocator, .{
-        .integer = .{ .tkn_index = 2, .value = 3 },
+        .integer = .{ .tok_index = 2, .value = 3 },
     });
     const expression = try ast.addNode(allocator, .{
          .infix = .{ .left = left, .operator = 1, .right = right },
