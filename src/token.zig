@@ -52,7 +52,7 @@ pub const Token = struct {
         return keywords.get(ident) orelse .ident;
     }
 
-    pub fn lex(tag: Type) ?[]const u8 {
+    pub fn token_string(tag: Type) ?[]const u8 {
         return switch (tag) {
             .illegal,
             .eof,
