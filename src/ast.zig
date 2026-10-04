@@ -44,7 +44,7 @@ pub const ArrayLiteral = struct {
 
 pub const InfixExpression = struct {
     left: NodeIndex,
-    operator: TokenIndex,
+    operator: token.Type,
     right: NodeIndex,
 };
 
@@ -55,7 +55,7 @@ pub const IndexExpression = struct {
 };
 
 pub const Prefix = struct {
-    operator: TokenIndex,
+    operator: token.Type,
     right: NodeIndex,
 };
 
@@ -63,7 +63,7 @@ pub const FunctionLiteral = struct {
     tok_index: TokenIndex, // The "fn" token
     parameters: NodeRange,
     return_type: ?NodeIndex,
-    body: NodeIndex // Block node
+    body: NodeIndex, // Block node
 };
 
 pub const Call = struct {
@@ -150,13 +150,14 @@ test "infix node references its operands and operator" {
         .integer = .{ .tok_index = 2, .value = 3 },
     });
     const expression = try ast.addNode(allocator, .{
-         .infix = .{ .left = left, .operator = 1, .right = right },
+         .infix = .{ .left = left, .operator = token.Type.plus, .right = right },
     });
 
     ast.roots = try ast.addRange(allocator, &.{expression});
 
     const root_idx = ast.extra.items[ast.roots.start];
     const infix = ast.nodes.items[root_idx].infix;
+    const infix_op = token.Token.token_string(infix.operator);
 
     try std.testing.expectEqual(@as(u32, 1), ast.roots.len);
     try std.testing.expectEqual(
@@ -167,5 +168,17 @@ test "infix node references its operands and operator" {
        @as(i64, 3),
        ast.nodes.items[infix.right].integer.value,
     );
-    try std.testing.expectEqualStrings("+", ast.tokenText(infix.operator));
+    try std.testing.expectEqualStrings("+", infix_op.?);
+}
+
+test "AST node layout" {
+    std.debug.print("\n{s:<24} {s:>10} {s:>10}\n", .{ "Type", "Size (B)", "Align (B)" });
+
+    inline for (.{
+        Node, TypeName, Identifier, IntegerLiteral, StringLiteral,
+        ArrayLiteral, InfixExpression, IndexExpression, Prefix,
+        FunctionLiteral, Call, Parameter, Block, If,
+    }) |T| {
+        std.debug.print("{s:<24} {d:>10} {d:>10}\n", .{ @typeName(T), @sizeOf(T), @alignOf(T) });
+    }
 }
