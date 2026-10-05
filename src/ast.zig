@@ -17,6 +17,7 @@ pub const Node = union(enum) {
     call: Call,
     parameter: Parameter,
     block: Block,
+    return_expr: Return,
     if_expr: If,
 };
 
@@ -61,7 +62,7 @@ pub const Prefix = struct {
 
 pub const FunctionLiteral = struct {
     tok_index: TokenIndex, // The "fn" token
-    parameters: NodeRange,
+    parameters: ?NodeRange,
     return_type: ?NodeIndex,
     body: NodeIndex, // Block node
 };
@@ -74,12 +75,17 @@ pub const Call = struct {
 
 pub const Parameter = struct {
     name: TokenIndex,
-    type_expr: NodeIndex,
+    type_expr: token.Type,
 };
 
 pub const Block = struct {
     tok_index: TokenIndex, // The "{" token
     statements: NodeRange,
+};
+
+pub const Return = struct {
+    tok_index: TokenIndex,
+    expression: NodeIndex,
 };
 
 pub const If = struct {
