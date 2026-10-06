@@ -25,8 +25,6 @@ pub const Type = enum {
     rbrace,
     lbracket,
     rbracket,
-    key_int,
-    key_string,
     key_func,
     key_if,
     key_else,
@@ -34,8 +32,6 @@ pub const Type = enum {
 };
 
 pub const keywords = std.StaticStringMap(Type).initComptime(.{
-    .{ "int", .key_int },
-    .{ "string", .key_string },
     .{ "fn", .key_func },
     .{ "if", .key_if },
     .{ "else", .key_else },
@@ -80,8 +76,6 @@ pub const Token = struct {
             .rbrace => "}",
             .lbracket => "[",
             .rbracket => "]",
-            .key_int => "int",
-            .key_string => "string",
             .key_func => "fn",
             .key_if => "if",
             .key_else => "else",
@@ -276,7 +270,7 @@ test "lexing typed assignment" {
     const expected = [_]Type{
         .ident,
         .colon,
-        .key_string,
+        .ident,
         .assign,
         .string_lit,
         .semicolon,

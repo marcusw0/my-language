@@ -15,7 +15,6 @@ pub const Node = union(enum) {
     prefix: Prefix,
     func_lit: FunctionLiteral,
     call: Call,
-    parameter: Parameter,
     block: Block,
     return_expr: Return,
     if_expr: If,
@@ -30,7 +29,6 @@ pub const Identifier = struct {
 };
 
 pub const IntegerLiteral = struct {
-    tok_index: TokenIndex,
     value: i64,
 };
 
@@ -39,13 +37,13 @@ pub const StringLiteral = struct {
 };
 
 pub const ArrayLiteral = struct {
-    tok_index: TokenIndex,
     elements: NodeRange,
+    tok_index: TokenIndex,
 };
 
 pub const InfixExpression = struct {
-    left: NodeIndex,
     operator: token.Type,
+    left: NodeIndex,
     right: NodeIndex,
 };
 
@@ -60,27 +58,31 @@ pub const Prefix = struct {
     right: NodeIndex,
 };
 
+pub const FuncSignature = struct {
+    args: ?ParameterRange,
+    name: TokenIndex,
+    return_type: ?TokenIndex,
+};
+
 pub const FunctionLiteral = struct {
-    tok_index: TokenIndex, // The "fn" token
-    parameters: ?NodeRange,
-    return_type: ?NodeIndex,
+    signature: FuncSignature,
     body: NodeIndex, // Block node
 };
 
 pub const Call = struct {
+    arguments: NodeRange, // Expression-node indices in Ast.extra
     tok_index: TokenIndex, // The "(" token
     func: NodeIndex,
-    arguments: NodeRange,
 };
 
 pub const Parameter = struct {
+    type_expr: TokenIndex,
     name: TokenIndex,
-    type_expr: token.Type,
 };
 
 pub const Block = struct {
-    tok_index: TokenIndex, // The "{" token
     statements: NodeRange,
+    tok_index: TokenIndex, // The "{" token
 };
 
 pub const Return = struct {
@@ -100,12 +102,18 @@ pub const NodeRange = struct {
     len: u32,
 };
 
+pub const ParameterRange = struct {
+    start: u32,
+    len: u32,
+};
+
 pub const Ast = struct {
-    source: []const u8,
-    roots: NodeRange,
     tokens: std.ArrayList(token.Token) = .empty,
     nodes: std.ArrayList(Node) = .empty,
     extra: std.ArrayList(NodeIndex) = .empty,
+    parameters: std.ArrayList(Parameter) = .empty,
+    roots: NodeRange,
+    source: []const u8,
 
     pub fn addNode(self: *Ast, allocator: std.mem.Allocator, node: Node) !NodeIndex {
         const index: NodeIndex = @intCast(self.nodes.items.len);
@@ -128,6 +136,7 @@ pub const Ast = struct {
         self.tokens.deinit(allocator);
         self.nodes.deinit(allocator);
         self.extra.deinit(allocator);
+        self.parameters.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -150,10 +159,10 @@ test "infix node references its operands and operator" {
     }
 
     const left = try ast.addNode(allocator, .{
-        .integer = .{ .tok_index = 0, .value = 2 },
+        .integer = .{ .value = 2 },
     });
     const right = try ast.addNode(allocator, .{
-        .integer = .{ .tok_index = 2, .value = 3 },
+        .integer = .{ .value = 3 },
     });
     const expression = try ast.addNode(allocator, .{
          .infix = .{ .left = left, .operator = token.Type.plus, .right = right },
@@ -183,7 +192,7 @@ test "AST node layout" {
     inline for (.{
         Node, TypeName, Identifier, IntegerLiteral, StringLiteral,
         ArrayLiteral, InfixExpression, IndexExpression, Prefix,
-        FunctionLiteral, Call, Parameter, Block, If,
+        FunctionLiteral, Call, Parameter, Block, If, FuncSignature,
     }) |T| {
         std.debug.print("{s:<24} {d:>10} {d:>10}\n", .{ @typeName(T), @sizeOf(T), @alignOf(T) });
     }
