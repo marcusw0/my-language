@@ -29,6 +29,7 @@ const Precedence = enum {
     lowest,
     equals,      // ==
     lessgreater, // > or <
+    fallback,    // orelse
     sum,         // +
     product,     // *
     prefix,      // -X or !X
@@ -40,6 +41,7 @@ fn precedence(token: Token) Precedence {
     return switch (token.type) {
         .eq, .not_eq => .equals,
         .lt, .gt => .lessgreater,
+        .key_orelse => .fallback,
         .plus, .minus => .sum,
         .asterisk, .slash => .product,
         .lparen => .call,
@@ -206,9 +208,45 @@ fn parse_func(p: *Parser) ParseError!NodeIndex {
         .return_type = null,
     };
 
-    if (p.peek_token().type == .ident) {
-        signature.return_type = @as(u32, @intCast(p.tok_idx));
-        _ = p.next_token();
+    if (p.peek_token().type != .lbrace) {
+        switch (p.peek_token().type) {
+            .ident => {
+                const id = try p.ast.addNode(p.allocator, .{
+                    .identifier = .{ .tok_index = @intCast(p.tok_idx) },
+                });
+                _ = p.next_token();
+                if (p.peek_token().type == .bang) {
+                    _ = p.next_token();
+                    if (p.peek_token().type == .ident) {
+                        const err = try p.ast.addNode(p.allocator, .{
+                            .identifier = .{ .tok_index = @intCast(p.tok_idx) },
+                        });
+                        signature.return_type = try p.ast.addNode(p.allocator, .{
+                            .err_union = .{
+                                .success = id,
+                                .err = err,
+                            }
+                        });
+                    } else return ParseError.ExpectedParameterType;
+                    _ = p.next_token();
+                } else {
+                    signature.return_type = id;
+                }
+            },
+            .question => {
+                _ = p.next_token();
+                if (p.peek_token().type == .ident) {
+                    const id = try p.ast.addNode(p.allocator, .{
+                        .identifier = .{ .tok_index = @intCast(p.tok_idx) },
+                    });
+                    signature.return_type = try p.ast.addNode(p.allocator, .{
+                        .optional = .{ .child = id },
+                    });
+                } else return ParseError.ExpectedParameterType;
+                _ = p.next_token();
+            },
+            else => return ParseError.InvalidCharacter,
+        }
     }
 
     if (p.peek_token().type != .lbrace) {
@@ -236,7 +274,9 @@ fn parse_parameters(p: *Parser) ParseError!ast.ParameterRange {
             _ = p.next_token();
 
             if (p.peek_token().type != .ident) return ParseError.ExpectedParameterType;
-            const type_expr = @as(u32, @intCast(p.tok_idx));
+            const type_expr = try p.ast.addNode(p.allocator, .{
+                .identifier = .{ .tok_index = @intCast(p.tok_idx) },
+            });
             _ = p.next_token();
 
             try p.ast.parameters.append(p.allocator, .{
@@ -473,12 +513,12 @@ test "named functions compose with conditionals returns and calls" {
     const roots = a.extra.items[a.roots.start..][0..a.roots.len];
     const func = a.nodes.items[roots[0]].func_lit;
     try std.testing.expectEqualStrings("choose", a.tokenText(func.signature.name));
-    try std.testing.expectEqualStrings("u32", a.tokenText(func.signature.return_type.?));
+    try std.testing.expectEqualStrings("u32", a.tokenText(a.nodes.items[func.signature.return_type.?].identifier.tok_index));
     const parameters = func.signature.args.?;
     try std.testing.expectEqual(@as(u32, 2), parameters.len);
     try std.testing.expectEqualStrings("x", a.tokenText(a.parameters.items[parameters.start].name));
-    try std.testing.expectEqualStrings("u8", a.tokenText(a.parameters.items[parameters.start].type_expr));
-    try std.testing.expectEqualStrings("f64", a.tokenText(a.parameters.items[parameters.start + 1].type_expr));
+    try std.testing.expectEqualStrings("u8", a.tokenText(a.nodes.items[a.parameters.items[parameters.start].type_expr].identifier.tok_index));
+    try std.testing.expectEqualStrings("f64", a.tokenText(a.nodes.items[a.parameters.items[parameters.start + 1].type_expr].identifier.tok_index));
     const body = a.nodes.items[func.body].block.statements;
     try std.testing.expectEqual(@as(u32, 1), body.len);
     const conditional = a.nodes.items[a.extra.items[body.start]].if_expr;
