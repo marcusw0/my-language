@@ -8,6 +8,7 @@ pub const Type = enum {
     string_lit,
     assign,
     bang,
+    question,
     slash,
     eq,
     not_eq,
@@ -25,17 +26,23 @@ pub const Type = enum {
     rbrace,
     lbracket,
     rbracket,
+    key_orelse,
     key_func,
     key_if,
     key_else,
     key_return,
+    key_const,
+    key_var
 };
 
 pub const keywords = std.StaticStringMap(Type).initComptime(.{
+    .{ "orelse", .key_orelse },
     .{ "fn", .key_func },
     .{ "if", .key_if },
     .{ "else", .key_else },
     .{ "return", .key_return },
+    .{ "const", .key_const },
+    .{ "var", .key_var },
 });
 
 
@@ -61,6 +68,7 @@ pub const Token = struct {
             .plus => "+",
             .minus => "-",
             .bang => "!",
+            .question => "?",
             .asterisk => "*",
             .slash => "/",
             .lt => "<",
@@ -76,10 +84,13 @@ pub const Token = struct {
             .rbrace => "}",
             .lbracket => "[",
             .rbracket => "]",
+            .key_orelse => "orelse",
             .key_func => "fn",
             .key_if => "if",
             .key_else => "else",
             .key_return => "return",
+            .key_const => "const",
+            .key_var => "var",
         };
     }
 };
@@ -141,6 +152,10 @@ pub const Lexer = struct {
                             tok.type = .not_eq;
                             self.index += 1;
                         } else { tok.type = .bang; }
+                    },
+                    '?' => {
+                        tok.type = .question;
+                        self.index += 1;
                     },
                     '/' => {
                         tok.type = .slash;

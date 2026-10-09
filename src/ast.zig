@@ -5,7 +5,6 @@ const TokenIndex = u32;
 const NodeIndex = u32;
 
 pub const Node = union(enum) {
-    type_name: TypeName,
     identifier: Identifier,
     integer: IntegerLiteral,
     string_lit: StringLiteral,
@@ -18,10 +17,8 @@ pub const Node = union(enum) {
     block: Block,
     return_expr: Return,
     if_expr: If,
-};
-
-pub const TypeName = struct {
-    tok_index: TokenIndex,
+    err_union: ErrorUnion,
+    optional: Optional,
 };
 
 pub const Identifier = struct {
@@ -61,7 +58,7 @@ pub const Prefix = struct {
 pub const FuncSignature = struct {
     args: ?ParameterRange,
     name: TokenIndex,
-    return_type: ?TokenIndex,
+    return_type: ?NodeIndex,
 };
 
 pub const FunctionLiteral = struct {
@@ -76,7 +73,7 @@ pub const Call = struct {
 };
 
 pub const Parameter = struct {
-    type_expr: TokenIndex,
+    type_expr: NodeIndex,
     name: TokenIndex,
 };
 
@@ -95,6 +92,15 @@ pub const If = struct {
     condition: NodeIndex,
     consequence: NodeIndex,
     alternative: ?NodeIndex,
+};
+
+pub const ErrorUnion = struct {
+    success: NodeIndex,
+    err: NodeIndex,
+};
+
+pub const Optional = struct {
+    child: NodeIndex,
 };
 
 pub const NodeRange = struct {
@@ -190,7 +196,7 @@ test "AST node layout" {
     std.debug.print("\n{s:<24} {s:>10} {s:>10}\n", .{ "Type", "Size (B)", "Align (B)" });
 
     inline for (.{
-        Node, TypeName, Identifier, IntegerLiteral, StringLiteral,
+        Node, Identifier, IntegerLiteral, StringLiteral,
         ArrayLiteral, InfixExpression, IndexExpression, Prefix,
         FunctionLiteral, Call, Parameter, Block, If, FuncSignature,
     }) |T| {
