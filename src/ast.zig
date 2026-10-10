@@ -19,6 +19,17 @@ pub const Node = union(enum) {
     if_expr: If,
     err_union: ErrorUnion,
     optional: Optional,
+    var_decl: VarDecl,
+};
+
+pub const Variability = enum(u1) {
+    uniform,
+    varying,
+};
+
+const Mutability = enum(u1) {
+    constant,
+    variable,
 };
 
 pub const Identifier = struct {
@@ -59,6 +70,7 @@ pub const FuncSignature = struct {
     args: ?ParameterRange,
     name: TokenIndex,
     return_type: ?NodeIndex,
+    return_variability: ?Variability = null,
 };
 
 pub const FunctionLiteral = struct {
@@ -75,6 +87,7 @@ pub const Call = struct {
 pub const Parameter = struct {
     type_expr: NodeIndex,
     name: TokenIndex,
+    variability: ?Variability = null,
 };
 
 pub const Block = struct {
@@ -101,6 +114,14 @@ pub const ErrorUnion = struct {
 
 pub const Optional = struct {
     child: NodeIndex,
+};
+
+pub const VarDecl = struct {
+    name: TokenIndex,
+    type_expr: ?NodeIndex,
+    initializer: NodeIndex,
+    variability: Variability,
+    mutability: Mutability,
 };
 
 pub const NodeRange = struct {
@@ -136,6 +157,24 @@ pub const Ast = struct {
     pub fn tokenText(self: *const Ast, index: TokenIndex) []const u8 {
         const tok = self.tokens.items[index];
         return self.source[tok.byte_start..tok.byte_end];
+    }
+
+    pub fn assignVariability(self: *Ast, tok: token.Token) Variability {
+        _ = self;
+        return switch (tok.type) {
+            .key_uniform => .uniform,
+            .key_varying => .varying,
+            else => unreachable,
+        };
+    }
+
+    pub fn assignMutability(self: *Ast, tok: token.Token) Mutability {
+        _ = self;
+        return switch (tok.type) {
+            .colon => .constant,
+            .assign => .variable,
+            else => unreachable,
+        };
     }
 
     pub fn deinit(self: *Ast, allocator: std.mem.Allocator) void {
