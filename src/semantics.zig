@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const tree = @import("ast.zig");
 const symbol = @import("symbol.zig");
-const token = @import("token.zig").Token;
+const Token = @import("token.zig").Token;
 
 const SemanticError = error{
     ExpectedPrimitiveType,
@@ -11,7 +11,7 @@ const SemanticError = error{
     InvalidCharacter,
 };
 
-pub fn EvalFunctions(ast: tree.Ast) !void {
+pub fn evalFunctions(ast: tree.Ast) !void {
     const roots = ast.extra.items[ast.roots.start..][0..ast.roots.len];
     for (roots) |value| {
         switch (ast.nodes.items[value]) {
@@ -24,9 +24,9 @@ pub fn EvalFunctions(ast: tree.Ast) !void {
                         try validateTypeAnnotation(ast, parameter.type_expr);
                     }
                 }
-                if (func.signature.return_type) |returnType| {
+                if (func.signature.return_type) |return_type| {
                     if (func.signature.return_variability == null) return SemanticError.ExpectedVariability;
-                    try validateTypeAnnotation(ast, returnType);
+                    try validateTypeAnnotation(ast, return_type);
                 }
             },
             else => {}
@@ -50,7 +50,7 @@ fn validateTypeAnnotation(ast: tree.Ast, index: u32) SemanticError!void {
                 .identifier => |ident| ident,
                 else => return SemanticError.ExpectedErrorType,
             };
-            const error_type = symbol.PrimitiveTypes.get(ast.tokenText(fail.tok_index)) orelse
+            const error_type = symbol.primitive_types.get(ast.tokenText(fail.tok_index)) orelse
                 return SemanticError.ExpectedErrorType;
             if (error_type != .err) {
                 return SemanticError.ExpectedErrorType;
@@ -79,9 +79,9 @@ test "function annotations validate parameter records and return types" {
         var parser = try Parser.init(std.testing.allocator, &ast, &lexer);
         try parser.parse();
         if (case.expected) |expected| {
-            try std.testing.expectError(expected, EvalFunctions(ast));
+            try std.testing.expectError(expected, evalFunctions(ast));
         } else {
-            try EvalFunctions(ast);
+            try evalFunctions(ast);
         }
     }
 }
@@ -112,9 +112,9 @@ test "function annotations require explicit variability" {
         var parser = try Parser.init(std.testing.allocator, &ast, &lexer);
         try parser.parse();
         if (case.expected) |expected| {
-            try std.testing.expectError(expected, EvalFunctions(ast));
+            try std.testing.expectError(expected, evalFunctions(ast));
         } else {
-            try EvalFunctions(ast);
+            try evalFunctions(ast);
         }
     }
 }

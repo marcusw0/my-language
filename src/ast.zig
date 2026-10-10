@@ -217,7 +217,7 @@ test "infix node references its operands and operator" {
 
     const root_idx = ast.extra.items[ast.roots.start];
     const infix = ast.nodes.items[root_idx].infix;
-    const infix_op = token.Token.token_string(infix.operator);
+    const infix_op = token.Token.tokenString(infix.operator);
 
     try std.testing.expectEqual(@as(u32, 1), ast.roots.len);
     try std.testing.expectEqual(

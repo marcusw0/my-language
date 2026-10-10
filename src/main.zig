@@ -1,7 +1,7 @@
 const std = @import("std");
 const Lexer = @import("token.zig").Lexer;
 const Ast = @import("ast.zig").Ast;
-const node_range = @import("ast.zig").NodeRange;
+const NodeRange = @import("ast.zig").NodeRange;
 const Parser = @import("parser.zig").Parser;
 
 pub fn main(init: std.process.Init) !void {
@@ -23,7 +23,7 @@ pub fn main(init: std.process.Init) !void {
     defer init.gpa.free(source);
 
     var lexer = Lexer.init(source);
-    const range = node_range{ .start = 0, .len = 0 };
+    const range = NodeRange{ .start = 0, .len = 0 };
 
     var ast = Ast{
         .source = lexer.buffer,

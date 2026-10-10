@@ -2,9 +2,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
-const Tokenizer = @import("token.zig");
+const tokenizer = @import("token.zig");
 const Token = @import("token.zig").Token;
-const tok_type = @import("token.zig").Type;
+const TokenType = @import("token.zig").Type;
 const Lexer = @import("token.zig").Lexer;
 const ast = @import("ast.zig");
 const Ast = ast.Ast;
@@ -79,8 +79,8 @@ pub const Parser = struct {
         var root_indices: std.ArrayList(NodeIndex) = .empty;
         defer root_indices.deinit(self.allocator);
 
-        while (self.peek_token().type != .eof) {
-            const root_idx = try parse_statement(self);
+        while (self.peekToken().type != .eof) {
+            const root_idx = try parseStatement(self);
             try root_indices.append(self.allocator, root_idx);
         }
         self.ast.roots = try self.ast.addRange(
@@ -89,76 +89,76 @@ pub const Parser = struct {
         );
     }
 
-    fn next_token(self: *Parser) Token {
+    fn nextToken(self: *Parser) Token {
         self.tok_idx += 1;
         return self.ast.tokens.items[self.tok_idx - 1];
     }
 
-    fn peek_token(self: *Parser) Token {
+    fn peekToken(self: *Parser) Token {
         return self.ast.tokens.items[self.tok_idx];
     }
 };
 
-fn parse_statement(p: *Parser) ParseError!NodeIndex {
-    const token = p.peek_token();
+fn parseStatement(p: *Parser) ParseError!NodeIndex {
+    const token = p.peekToken();
 
     const index = switch (token.type) {
-        .key_return => try parse_return(p),
-        .key_func => try parse_func(p),
-        .key_varying, .key_uniform => try parse_varDecl(p),
-        else => try parse_expression(p, .lowest),
+        .key_return => try parseReturn(p),
+        .key_func => try parseFunc(p),
+        .key_varying, .key_uniform => try parseVarDecl(p),
+        else => try parseExpression(p, .lowest),
     };
 
-    const nodeType = p.ast.nodes.items[index];
-    switch (nodeType) {
+    const node_type = p.ast.nodes.items[index];
+    switch (node_type) {
         .if_expr => {
-            if (p.peek_token().type == .semicolon) {
+            if (p.peekToken().type == .semicolon) {
                 return ParseError.InvalidCharacter;
             }
             return index;
         },
         else => {
-            if (p.peek_token().type != .semicolon) {
+            if (p.peekToken().type != .semicolon) {
                 return ParseError.ExpectedTerminator;
             }
-            _ = p.next_token();
+            _ = p.nextToken();
             return index;
         }
     }
 }
 
-fn parse_varDecl(p: *Parser) ParseError!NodeIndex {
-    const token = p.peek_token();
+fn parseVarDecl(p: *Parser) ParseError!NodeIndex {
+    const token = p.peekToken();
     const variability = p.ast.assignVariability(token);
-    _ = p.next_token();
+    _ = p.nextToken();
 
-    if (p.peek_token().type != .ident) {
+    if (p.peekToken().type != .ident) {
         return ParseError.InvalidCharacter;
     }
     const name = @as(u32, @intCast(p.tok_idx));
-    _ = p.next_token();
+    _ = p.nextToken();
 
-    if (p.peek_token().type != .colon) {
+    if (p.peekToken().type != .colon) {
         return ParseError.ExpectedSeparator;
     }
-    _ = p.next_token();
+    _ = p.nextToken();
 
     var type_expr: ?NodeIndex = null;
-    if (p.peek_token().type == .ident) {
+    if (p.peekToken().type == .ident) {
         type_expr = try p.ast.addNode(p.allocator, .{
             .identifier = .{ .tok_index = @intCast(p.tok_idx) },
         });
-        _ = p.next_token();
+        _ = p.nextToken();
     }
-    const tok = p.peek_token();
+    const tok = p.peekToken();
     if (tok.type != .assign and tok.type != .colon) {
         return ParseError.ExpectedSeparator;
     }
 
     const mutability = p.ast.assignMutability(tok);
-    _ = p.next_token();
+    _ = p.nextToken();
 
-    const val = try parse_expression(p, .lowest);
+    const val = try parseExpression(p, .lowest);
 
     return p.ast.addNode(p.allocator, .{
         .var_decl = .{
@@ -172,15 +172,15 @@ fn parse_varDecl(p: *Parser) ParseError!NodeIndex {
 
 }
 
-fn parse_expression(p: *Parser, minimum: Precedence) ParseError!NodeIndex {
-    const token = p.peek_token();
+fn parseExpression(p: *Parser, minimum: Precedence) ParseError!NodeIndex {
+    const token = p.peekToken();
 
     var left_idx: NodeIndex = switch (token.type) {
-        .int => try parse_integer_lit(p, token),
+        .int => try parseIntegerLit(p, token),
 
         .ident => blk: {
             const index = @as(u32, @intCast(p.tok_idx));
-            _ = p.next_token();
+            _ = p.nextToken();
             break :blk try p.ast.addNode(p.allocator, .{
                 .identifier = .{ .tok_index = index },
             });
@@ -188,89 +188,89 @@ fn parse_expression(p: *Parser, minimum: Precedence) ParseError!NodeIndex {
 
         .string_lit => blk: {
             const index = @as(u32, @intCast(p.tok_idx));
-            _ = p.next_token();
+            _ = p.nextToken();
             break :blk try p.ast.addNode(p.allocator, .{
                 .string_lit = .{ .tok_index = index },
             });
         },
 
-        .lbracket => try parse_array_lit(p),
+        .lbracket => try parseArrayLit(p),
 
         .lparen => blk: {
-            _ = p.next_token(); // Consume '('.
-            const inner_idx = try parse_expression(p, .lowest);
+            _ = p.nextToken(); // Consume '('.
+            const inner_idx = try parseExpression(p, .lowest);
 
-            if (p.peek_token().type != .rparen)
+            if (p.peekToken().type != .rparen)
                 return error.ExpectedRightParen;
 
-            _ = p.next_token(); // Consume ')'.
+            _ = p.nextToken(); // Consume ')'.
             break :blk inner_idx;
         },
 
-        .minus, .bang, .plus => try parse_prefix(p, token),
+        .minus, .bang, .plus => try parsePrefix(p, token),
 
-        .key_if => try parse_if(p),
+        .key_if => try parseIf(p),
 
         .illegal => return ParseError.InvalidCharacter,
 
         else => return error.ExpectedExpression,
     };
 
-    while (@intFromEnum(precedence(p.peek_token())) >
+    while (@intFromEnum(precedence(p.peekToken())) >
         @intFromEnum(minimum)) {
-        left_idx = switch (p.peek_token().type) {
-            .lparen => try parse_call(p, left_idx),
-            .lbracket => try parse_index(p, left_idx),
-            else => try parse_infix(p, left_idx),
+        left_idx = switch (p.peekToken().type) {
+            .lparen => try parseCall(p, left_idx),
+            .lbracket => try parseIndex(p, left_idx),
+            else => try parseInfix(p, left_idx),
         };
     }
     return left_idx;
 }
 
-fn parse_func(p: *Parser) ParseError!NodeIndex {
-    _ = p.next_token();
+fn parseFunc(p: *Parser) ParseError!NodeIndex {
+    _ = p.nextToken();
 
-    if (p.peek_token().type != .ident) {
+    if (p.peekToken().type != .ident) {
         return ParseError.InvalidCharacter;
     }
     const name = @as(u32, @intCast(p.tok_idx));
-    _ = p.next_token();
+    _ = p.nextToken();
 
-    if (p.peek_token().type != .lparen) {
+    if (p.peekToken().type != .lparen) {
         return ParseError.ExpectedLeftParen;
     }
-    _ = p.next_token();
+    _ = p.nextToken();
 
     var args: ?ast.ParameterRange = null;
-    if (p.peek_token().type != .rparen) {
-        args = try parse_parameters(p);
+    if (p.peekToken().type != .rparen) {
+        args = try parseParameters(p);
     }
-    if (p.peek_token().type != .rparen) return ParseError.ExpectedRightParen;
-    _ = p.next_token();
+    if (p.peekToken().type != .rparen) return ParseError.ExpectedRightParen;
+    _ = p.nextToken();
 
     var signature = ast.FuncSignature{
         .name = name,
         .args = args,
         .return_type = null,
-        .return_variability = parse_variability(p),
+        .return_variability = parseVariability(p),
     };
 
     if (signature.return_variability != null and
-        p.peek_token().type != .ident and p.peek_token().type != .question)
+        p.peekToken().type != .ident and p.peekToken().type != .question)
     {
         return ParseError.ExpectedParameterType;
     }
 
-    if (p.peek_token().type != .lbrace) {
-        switch (p.peek_token().type) {
+    if (p.peekToken().type != .lbrace) {
+        switch (p.peekToken().type) {
             .ident => {
                 const id = try p.ast.addNode(p.allocator, .{
                     .identifier = .{ .tok_index = @intCast(p.tok_idx) },
                 });
-                _ = p.next_token();
-                if (p.peek_token().type == .bang) {
-                    _ = p.next_token();
-                    if (p.peek_token().type == .ident) {
+                _ = p.nextToken();
+                if (p.peekToken().type == .bang) {
+                    _ = p.nextToken();
+                    if (p.peekToken().type == .ident) {
                         const err = try p.ast.addNode(p.allocator, .{
                             .identifier = .{ .tok_index = @intCast(p.tok_idx) },
                         });
@@ -281,14 +281,14 @@ fn parse_func(p: *Parser) ParseError!NodeIndex {
                             }
                         });
                     } else return ParseError.ExpectedParameterType;
-                    _ = p.next_token();
+                    _ = p.nextToken();
                 } else {
                     signature.return_type = id;
                 }
             },
             .question => {
-                _ = p.next_token();
-                if (p.peek_token().type == .ident) {
+                _ = p.nextToken();
+                if (p.peekToken().type == .ident) {
                     const id = try p.ast.addNode(p.allocator, .{
                         .identifier = .{ .tok_index = @intCast(p.tok_idx) },
                     });
@@ -296,17 +296,17 @@ fn parse_func(p: *Parser) ParseError!NodeIndex {
                         .optional = .{ .child = id },
                     });
                 } else return ParseError.ExpectedParameterType;
-                _ = p.next_token();
+                _ = p.nextToken();
             },
             else => return ParseError.InvalidCharacter,
         }
     }
 
-    if (p.peek_token().type != .lbrace) {
+    if (p.peekToken().type != .lbrace) {
         return ParseError.ExpectedLeftBrace;
     }
 
-    const body = try parse_block(p);
+    const body = try parseBlock(p);
 
     return try p.ast.addNode(p.allocator, .{
         .func_lit = .{
@@ -316,32 +316,32 @@ fn parse_func(p: *Parser) ParseError!NodeIndex {
     });
 }
 
-fn parse_variability(p: *Parser) ?ast.Variability {
-    const token = p.peek_token();
+fn parseVariability(p: *Parser) ?ast.Variability {
+    const token = p.peekToken();
     if (token.type != .key_uniform and token.type != .key_varying) return null;
-    _ = p.next_token();
+    _ = p.nextToken();
     return p.ast.assignVariability(token);
 }
 
-fn parse_parameters(p: *Parser) ParseError!ast.ParameterRange {
+fn parseParameters(p: *Parser) ParseError!ast.ParameterRange {
     const start = p.ast.parameters.items.len;
     errdefer p.ast.parameters.items.len = start;
 
-    if (p.peek_token().type != .rparen) {
+    if (p.peekToken().type != .rparen) {
         while (true) {
-            const variability = parse_variability(p);
-            if (p.peek_token().type != .ident) return ParseError.ExpectedParameterName;
+            const variability = parseVariability(p);
+            if (p.peekToken().type != .ident) return ParseError.ExpectedParameterName;
             const name = @as(u32, @intCast(p.tok_idx));
-            _ = p.next_token();
+            _ = p.nextToken();
 
-            if (p.peek_token().type != .colon) return ParseError.ExpectedSeparator;
-            _ = p.next_token();
+            if (p.peekToken().type != .colon) return ParseError.ExpectedSeparator;
+            _ = p.nextToken();
 
-            if (p.peek_token().type != .ident) return ParseError.ExpectedParameterType;
+            if (p.peekToken().type != .ident) return ParseError.ExpectedParameterType;
             const type_expr = try p.ast.addNode(p.allocator, .{
                 .identifier = .{ .tok_index = @intCast(p.tok_idx) },
             });
-            _ = p.next_token();
+            _ = p.nextToken();
 
             try p.ast.parameters.append(p.allocator, .{
                 .name = name,
@@ -349,10 +349,10 @@ fn parse_parameters(p: *Parser) ParseError!ast.ParameterRange {
                 .variability = variability,
             });
 
-            if (p.peek_token().type == .rparen) break;
-            if (p.peek_token().type == .eof) return ParseError.ExpectedRightParen;
-            if (p.peek_token().type != .comma) return ParseError.ExpectedSeparator;
-            _ = p.next_token();
+            if (p.peekToken().type == .rparen) break;
+            if (p.peekToken().type == .eof) return ParseError.ExpectedRightParen;
+            if (p.peekToken().type != .comma) return ParseError.ExpectedSeparator;
+            _ = p.nextToken();
         }
     }
 
@@ -362,27 +362,27 @@ fn parse_parameters(p: *Parser) ParseError!ast.ParameterRange {
     };
 }
 
-fn parse_if(p: *Parser) ParseError!NodeIndex {
+fn parseIf(p: *Parser) ParseError!NodeIndex {
     const index = @as(u32, @intCast(p.tok_idx));
-    _ = p.next_token();
-    if (p.peek_token().type != .lparen) return ParseError.ExpectedLeftParen;
+    _ = p.nextToken();
+    if (p.peekToken().type != .lparen) return ParseError.ExpectedLeftParen;
 
-    const condition = try parse_expression(p, .lowest);
+    const condition = try parseExpression(p, .lowest);
 
-    if (p.peek_token().type != .lbrace and p.peek_token().type != .key_return) {
+    if (p.peekToken().type != .lbrace and p.peekToken().type != .key_return) {
         return ParseError.InvalidCharacter;
     }
 
-    const consequence = try parse_block(p);
+    const consequence = try parseBlock(p);
 
     var alternative: ?NodeIndex = null;
-    if (p.peek_token().type == .key_else) {
-        _ = p.next_token();
+    if (p.peekToken().type == .key_else) {
+        _ = p.nextToken();
 
-        if (p.peek_token().type != .lbrace and p.peek_token().type != .key_return) {
+        if (p.peekToken().type != .lbrace and p.peekToken().type != .key_return) {
             return ParseError.InvalidCharacter;
         }
-        alternative = try parse_block(p);
+        alternative = try parseBlock(p);
 
     }
     return try p.ast.addNode(p.allocator, .{
@@ -395,24 +395,24 @@ fn parse_if(p: *Parser) ParseError!NodeIndex {
     });
 }
 
-fn parse_block(p: *Parser) ParseError!NodeIndex {
-    if (p.peek_token().type == .key_return) {
-        return try parse_statement(p);
+fn parseBlock(p: *Parser) ParseError!NodeIndex {
+    if (p.peekToken().type == .key_return) {
+        return try parseStatement(p);
     }
-    if (p.peek_token().type != .lbrace) return ParseError.ExpectedLeftBrace;
+    if (p.peekToken().type != .lbrace) return ParseError.ExpectedLeftBrace;
     const index = @as(u32, @intCast(p.tok_idx));
-    _ = p.next_token();
+    _ = p.nextToken();
 
     var node_indices: std.ArrayList(NodeIndex) = .empty;
     defer node_indices.deinit(p.allocator);
 
-    while (p.peek_token().type != .rbrace and p.peek_token().type != .eof) {
-        const node_idx = try parse_statement(p);
+    while (p.peekToken().type != .rbrace and p.peekToken().type != .eof) {
+        const node_idx = try parseStatement(p);
         try node_indices.append(p.allocator, node_idx);
     }
 
-    if (p.peek_token().type != .rbrace) return ParseError.ExpectedRightBrace;
-    _ = p.next_token();
+    if (p.peekToken().type != .rbrace) return ParseError.ExpectedRightBrace;
+    _ = p.nextToken();
 
     const range = try p.ast.addRange(p.allocator, node_indices.items);
 
@@ -424,10 +424,10 @@ fn parse_block(p: *Parser) ParseError!NodeIndex {
     });
 }
 
-fn parse_return(p: *Parser) ParseError!NodeIndex {
+fn parseReturn(p: *Parser) ParseError!NodeIndex {
     const index = @as(u32, @intCast(p.tok_idx));
-    _ = p.next_token();
-    const expression = try parse_expression(p, .lowest);
+    _ = p.nextToken();
+    const expression = try parseExpression(p, .lowest);
 
     return p.ast.addNode(p.allocator, .{
         .return_expr = .{
@@ -437,9 +437,9 @@ fn parse_return(p: *Parser) ParseError!NodeIndex {
     });
 }
 
-fn parse_prefix(p: *Parser, token: Token) ParseError!NodeIndex {
-    _ = p.next_token();
-    const right = try parse_expression(p, .prefix);
+fn parsePrefix(p: *Parser, token: Token) ParseError!NodeIndex {
+    _ = p.nextToken();
+    const right = try parseExpression(p, .prefix);
     return try p.ast.addNode(p.allocator, .{
         .prefix = .{
             .operator = token.type,
@@ -448,7 +448,7 @@ fn parse_prefix(p: *Parser, token: Token) ParseError!NodeIndex {
     });
 }
 
-fn parse_expression_list(p: *Parser, closing: tok_type) ParseError!ast.NodeRange {
+fn parseExpressionList(p: *Parser, closing: TokenType) ParseError!ast.NodeRange {
     var indices: std.ArrayList(NodeIndex) = .empty;
     defer indices.deinit(p.allocator);
 
@@ -458,61 +458,61 @@ fn parse_expression_list(p: *Parser, closing: tok_type) ParseError!ast.NodeRange
         else => unreachable,
     };
 
-    if (p.peek_token().type != closing) {
+    if (p.peekToken().type != closing) {
         while (true) {
-            if (p.peek_token().type == .eof) return expected_closing;
-            const index = try parse_expression(p, .lowest);
+            if (p.peekToken().type == .eof) return expected_closing;
+            const index = try parseExpression(p, .lowest);
             try indices.append(p.allocator, index);
 
-            if (p.peek_token().type == closing) break;
-            if (p.peek_token().type == .eof) return expected_closing;
-            if (p.peek_token().type != .comma) return ParseError.ExpectedSeparator;
-            _ = p.next_token();
+            if (p.peekToken().type == closing) break;
+            if (p.peekToken().type == .eof) return expected_closing;
+            if (p.peekToken().type != .comma) return ParseError.ExpectedSeparator;
+            _ = p.nextToken();
             // As with parameter lists, a trailing comma is not accepted.
-            if (p.peek_token().type == closing) return ParseError.ExpectedExpression;
+            if (p.peekToken().type == closing) return ParseError.ExpectedExpression;
         }
     }
-    _ = p.next_token();
+    _ = p.nextToken();
     return try p.ast.addRange(p.allocator, indices.items);
 }
 
-fn parse_array_lit(p: *Parser) ParseError!NodeIndex {
+fn parseArrayLit(p: *Parser) ParseError!NodeIndex {
     const index = @as(u32, @intCast(p.tok_idx));
-    _ = p.next_token(); // Consume '['.
-    const elements = try parse_expression_list(p, .rbracket);
+    _ = p.nextToken(); // Consume '['.
+    const elements = try parseExpressionList(p, .rbracket);
     return try p.ast.addNode(p.allocator, .{
         .array_lit = .{ .tok_index = index, .elements = elements },
     });
 }
 
-fn parse_call(p: *Parser, func: NodeIndex) ParseError!NodeIndex {
+fn parseCall(p: *Parser, func: NodeIndex) ParseError!NodeIndex {
     const index = @as(u32, @intCast(p.tok_idx));
-    _ = p.next_token(); // Consume '('.
-    const arguments = try parse_expression_list(p, .rparen);
+    _ = p.nextToken(); // Consume '('.
+    const arguments = try parseExpressionList(p, .rparen);
     return try p.ast.addNode(p.allocator, .{
         .call = .{ .tok_index = index, .func = func, .arguments = arguments },
     });
 }
 
-fn parse_index(p: *Parser, left: NodeIndex) ParseError!NodeIndex {
+fn parseIndex(p: *Parser, left: NodeIndex) ParseError!NodeIndex {
     const index = @as(u32, @intCast(p.tok_idx));
-    _ = p.next_token(); // Consume '['.
-    const idx = try parse_expression(p, .lowest);
-    if (p.peek_token().type != .rbracket) return ParseError.ExpectedRightBracket;
-    _ = p.next_token(); // Consume ']'.
+    _ = p.nextToken(); // Consume '['.
+    const idx = try parseExpression(p, .lowest);
+    if (p.peekToken().type != .rbracket) return ParseError.ExpectedRightBracket;
+    _ = p.nextToken(); // Consume ']'.
     return try p.ast.addNode(p.allocator, .{
         .index_expr = .{ .tok_index = index, .left = left, .idx = idx },
     });
 }
 
-fn parse_infix(p: *Parser, left_idx: NodeIndex) ParseError!NodeIndex {
-    const operator = p.peek_token();
+fn parseInfix(p: *Parser, left_idx: NodeIndex) ParseError!NodeIndex {
+    const operator = p.peekToken();
     const op_type = operator.type;
     const operator_precedence = precedence(operator);
 
-    _ = p.next_token(); // Consume the operator.
+    _ = p.nextToken(); // Consume the operator.
 
-    const right_idx = try parse_expression(p, operator_precedence);
+    const right_idx = try parseExpression(p, operator_precedence);
 
     return try p.ast.addNode(p.allocator, .{
         .infix = .{
@@ -523,12 +523,12 @@ fn parse_infix(p: *Parser, left_idx: NodeIndex) ParseError!NodeIndex {
     });
 }
 
-fn parse_integer_lit(p: *Parser, token: Token) !NodeIndex {
+fn parseIntegerLit(p: *Parser, token: Token) !NodeIndex {
     const buffer: []const u8 = p.ast.source[token.byte_start..token.byte_end];
     const value = try std.fmt.parseInt(i64, buffer, 0);
     const node: Node = .{ .integer = .{ .value = value } };
     const node_idx = try p.ast.addNode(p.allocator, node);
-    _ = p.next_token();
+    _ = p.nextToken();
     return node_idx;
 }
 
@@ -557,7 +557,7 @@ test "parse variable declerations" {
     const type_expr = a.nodes.items[bar.type_expr.?].identifier;
     try std.testing.expectEqualStrings("u8", a.tokenText(type_expr.tok_index));
     try std.testing.expectEqual(@as(i64, 8), a.nodes.items[bar.initializer].integer.value);
-    try std.testing.expectEqual(tok_type.eof, parser.peek_token().type);
+    try std.testing.expectEqual(TokenType.eof, parser.peekToken().type);
 }
 
 test "parse identifiers strings and nested arrays" {
@@ -582,13 +582,13 @@ test "parse identifiers strings and nested arrays" {
     const elements = a.extra.items[array.elements.start..][0..array.elements.len];
     try std.testing.expectEqual(@as(i64, 1), a.nodes.items[elements[0]].integer.value);
     const sum = a.nodes.items[elements[1]].infix;
-    try std.testing.expectEqual(tok_type.plus, sum.operator);
+    try std.testing.expectEqual(TokenType.plus, sum.operator);
     try std.testing.expectEqual(@as(i64, 2), a.nodes.items[sum.left].integer.value);
     try std.testing.expectEqual(@as(i64, 3), a.nodes.items[sum.right].integer.value);
     const nested = a.nodes.items[elements[2]].array_lit.elements;
     try std.testing.expectEqual(@as(u32, 1), nested.len);
     try std.testing.expectEqual(@as(i64, 4), a.nodes.items[a.extra.items[nested.start]].integer.value);
-    try std.testing.expectEqual(tok_type.eof, parser.peek_token().type);
+    try std.testing.expectEqual(TokenType.eof, parser.peekToken().type);
 }
 
 test "function signatures retain parameter and return variability" {
@@ -637,7 +637,7 @@ test "function signatures retain parameter and return variability" {
     const shared = a.nodes.items[roots[3]].func_lit.signature;
     try std.testing.expectEqual(.uniform, shared.return_variability.?);
     try std.testing.expectEqualStrings("u8", a.tokenText(a.nodes.items[shared.return_type.?].identifier.tok_index));
-    try std.testing.expectEqual(tok_type.eof, parser.peek_token().type);
+    try std.testing.expectEqual(TokenType.eof, parser.peekToken().type);
 }
 
 test "named functions compose with conditionals returns and calls" {
@@ -667,7 +667,7 @@ test "named functions compose with conditionals returns and calls" {
     const body = a.nodes.items[func.body].block.statements;
     try std.testing.expectEqual(@as(u32, 1), body.len);
     const conditional = a.nodes.items[a.extra.items[body.start]].if_expr;
-    try std.testing.expectEqual(tok_type.lt, a.nodes.items[conditional.condition].infix.operator);
+    try std.testing.expectEqual(TokenType.lt, a.nodes.items[conditional.condition].infix.operator);
     const consequence = a.nodes.items[conditional.consequence].block.statements;
     try std.testing.expectEqual(@as(u32, 1), consequence.len);
     const returned = a.nodes.items[a.extra.items[consequence.start]].return_expr.expression;
@@ -681,7 +681,7 @@ test "named functions compose with conditionals returns and calls" {
     try std.testing.expect(empty.signature.return_variability == null);
     try std.testing.expectEqual(@as(u32, 2), a.parameters.items.len);
     try std.testing.expectEqual(@as(u32, 2), a.nodes.items[roots[2]].call.arguments.len);
-    try std.testing.expectEqual(tok_type.eof, parser.peek_token().type);
+    try std.testing.expectEqual(TokenType.eof, parser.peekToken().type);
 }
 
 test "malformed expressions lists and signatures return errors" {
@@ -728,7 +728,7 @@ test "malformed expressions lists and signatures return errors" {
     }
 }
 
-fn parse_allocation_test(allocator: Allocator) !void {
+fn parseAllocationTest(allocator: Allocator) !void {
     var lexer = Lexer.init(
         "fn f(varying x: u32) varying u32 { return g([x, h(2)], values[0]); }; " ++
         "f([1, [2, 3]][0]);",
@@ -740,7 +740,7 @@ fn parse_allocation_test(allocator: Allocator) !void {
 }
 
 test "nested parser allocations are cleaned up on allocation failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parse_allocation_test, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseAllocationTest, .{});
 }
 
 test "parameters allow an empty range" {
@@ -750,9 +750,9 @@ test "parameters allow an empty range" {
     defer a.deinit(allocator);
     var parser = try Parser.init(allocator, &a, &lexer);
 
-    const range = try parse_parameters(&parser);
+    const range = try parseParameters(&parser);
     try std.testing.expectEqual(@as(u32, 0), range.len);
-    try std.testing.expectEqual(tok_type.rparen, parser.peek_token().type);
+    try std.testing.expectEqual(TokenType.rparen, parser.peekToken().type);
 }
 
 test "parse expression" {
@@ -777,22 +777,22 @@ test "parse expression" {
 
     const root = a.nodes.items[start].infix;
     const operator = root.operator;
-    const op = Token.token_string(operator);
+    const op = Token.tokenString(operator);
 
-    const leftNode = a.nodes.items[root.left].integer;
-    const leftToken = leftNode.value;
+    const left_node = a.nodes.items[root.left].integer;
+    const left_token = left_node.value;
 
-    const rightNode = a.nodes.items[root.right].infix;
-    const rightToken = Token.token_string(rightNode.operator);
+    const right_node = a.nodes.items[root.right].infix;
+    const right_token = Token.tokenString(right_node.operator);
 
-    const childLeft = a.nodes.items[rightNode.left].integer.value;
-    const childRight = a.nodes.items[rightNode.right].integer.value;
+    const child_left = a.nodes.items[right_node.left].integer.value;
+    const child_right = a.nodes.items[right_node.right].integer.value;
 
     try std.testing.expectEqualStrings("+", op.?);
-    try std.testing.expectEqual(@as(i64, 2), leftToken);
-    try std.testing.expectEqualStrings("*", rightToken.?);
-    try std.testing.expectEqual(@as(i64, 4), childLeft);
-    try std.testing.expectEqual(@as(i64, 2), childRight);
+    try std.testing.expectEqual(@as(i64, 2), left_token);
+    try std.testing.expectEqualStrings("*", right_token.?);
+    try std.testing.expectEqual(@as(i64, 4), child_left);
+    try std.testing.expectEqual(@as(i64, 2), child_right);
 }
 
 test "parse prefix" {
@@ -817,7 +817,7 @@ test "parse prefix" {
 
     const root = a.nodes.items[start].prefix;
     const operator = root.operator;
-    const op = Token.token_string(operator);
+    const op = Token.tokenString(operator);
 
     const right = a.nodes.items[root.right].integer.value;
 
@@ -849,7 +849,7 @@ test "parse if expression" {
     const if_alt = root.alternative.?;
 
     const condition_op = a.nodes.items[root.condition].infix.operator;
-    const cond_op = Token.token_string(condition_op);
+    const cond_op = Token.tokenString(condition_op);
 
     const consequence = a.nodes.items[root.consequence].return_expr;
     const consq = a.nodes.items[consequence.expression].integer.value;
