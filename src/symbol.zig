@@ -3,8 +3,8 @@ const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const Ast = ast.Ast;
 
-const ScopeID = u32;
-const SymbolID = u32;
+const ScopeId = u32;
+const SymbolId = u32;
 
 const SymbolError = error{
     AtRootNode,
@@ -14,7 +14,7 @@ const SymbolError = error{
 pub const SymbolTable = struct {
     symbols: std.ArrayList(Symbol) = .empty,
     scope: std.ArrayList(Scope) = .empty,
-    current: ScopeID,
+    current: ScopeId,
 
     pub const DeclarationRef = union(enum) {
         variable: u32, // Ast.nodes index of .var_decl
@@ -24,13 +24,13 @@ pub const SymbolTable = struct {
 
     pub const Symbol = struct {
         declaration: DeclarationRef,
-        scope: ScopeID,
+        scope: ScopeId,
         name: []const u8,
     };
 
     pub const Scope = struct {
-        parent: ?ScopeID,
-        names: std.array_hash_map.String(SymbolID) = .empty,
+        parent: ?ScopeId,
+        names: std.array_hash_map.String(SymbolId) = .empty,
     };
 
     pub fn init(allocator: Allocator) !SymbolTable {
@@ -49,7 +49,7 @@ pub const SymbolTable = struct {
     }
 
     pub fn enterScope(self: *SymbolTable, allocator: Allocator) !void {
-        const id: ScopeID = @intCast(self.scope.items.len);
+        const id: ScopeId = @intCast(self.scope.items.len);
         try self.scope.append(allocator, .{ .parent = self.current });
         self.current = id;
     }
@@ -63,8 +63,8 @@ pub const SymbolTable = struct {
         }
     }
 
-    pub fn resolve(self: *const SymbolTable, name: []const u8) ?SymbolID {
-        var scope_id: ?ScopeID = self.current;
+    pub fn resolve(self: *const SymbolTable, name: []const u8) ?SymbolId {
+        var scope_id: ?ScopeId = self.current;
 
         while (scope_id) |id| {
             const scope = &self.scope.items[id];
@@ -82,14 +82,14 @@ pub const SymbolTable = struct {
         allocator: Allocator,
         name: []const u8,
         declaration:DeclarationRef,
-    ) SymbolError!SymbolID {
+    ) SymbolError!SymbolId {
         const scope = &self.scope.items[self.current];
 
         if (scope.names.contains(name)) {
             return error.DuplicateSymbol;
         }
         const prev_len = self.symbols.items.len;
-        const id: SymbolID = @intCast(prev_len);
+        const id: SymbolId = @intCast(prev_len);
 
         try self.symbols.append(allocator, .{
             .declaration = declaration,
@@ -103,7 +103,7 @@ pub const SymbolTable = struct {
     }
 };
 
-const primitive_types = enum {
+const PrimitiveType = enum {
     bool,
     u8,
     u16,
@@ -115,7 +115,7 @@ const primitive_types = enum {
     err,
 };
 
-pub const PrimitiveTypes = std.StaticStringMap(primitive_types).initComptime(.{
+pub const primitive_types = std.StaticStringMap(PrimitiveType).initComptime(.{
     .{ "bool", .bool },
     .{ "u8", .u8 },
     .{ "u16", .u16 },
@@ -128,5 +128,5 @@ pub const PrimitiveTypes = std.StaticStringMap(primitive_types).initComptime(.{
 });
 
 pub fn isPrimitiveType(ident: []const u8) bool {
-    return PrimitiveTypes.has(ident);
+    return primitive_types.has(ident);
 }
