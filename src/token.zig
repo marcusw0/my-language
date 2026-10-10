@@ -31,8 +31,8 @@ pub const Type = enum {
     key_if,
     key_else,
     key_return,
-    key_const,
-    key_var
+    key_uniform,
+    key_varying,
 };
 
 pub const keywords = std.StaticStringMap(Type).initComptime(.{
@@ -41,8 +41,8 @@ pub const keywords = std.StaticStringMap(Type).initComptime(.{
     .{ "if", .key_if },
     .{ "else", .key_else },
     .{ "return", .key_return },
-    .{ "const", .key_const },
-    .{ "var", .key_var },
+    .{ "uniform", .key_uniform },
+    .{ "varying", .key_varying },
 });
 
 
@@ -89,8 +89,8 @@ pub const Token = struct {
             .key_if => "if",
             .key_else => "else",
             .key_return => "return",
-            .key_const => "const",
-            .key_var => "var",
+            .key_uniform => "uniform",
+            .key_varying => "varying",
         };
     }
 };

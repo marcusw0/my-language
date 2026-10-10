@@ -105,6 +105,7 @@ fn parse_statement(p: *Parser) ParseError!NodeIndex {
     const index = switch (token.type) {
         .key_return => try parse_return(p),
         .key_func => try parse_func(p),
+        .key_varying, .key_uniform => try parse_varDecl(p),
         else => try parse_expression(p, .lowest),
     };
 
@@ -124,6 +125,51 @@ fn parse_statement(p: *Parser) ParseError!NodeIndex {
             return index;
         }
     }
+}
+
+fn parse_varDecl(p: *Parser) ParseError!NodeIndex {
+    const token = p.peek_token();
+    const variability = p.ast.assignVariability(token);
+    _ = p.next_token();
+
+    if (p.peek_token().type != .ident) {
+        return ParseError.InvalidCharacter;
+    }
+    const name = @as(u32, @intCast(p.tok_idx));
+    _ = p.next_token();
+
+    if (p.peek_token().type != .colon) {
+        return ParseError.ExpectedSeparator;
+    }
+    _ = p.next_token();
+
+    var type_expr: ?NodeIndex = null;
+    if (p.peek_token().type == .ident) {
+        type_expr = try p.ast.addNode(p.allocator, .{
+            .identifier = .{ .tok_index = @intCast(p.tok_idx) },
+        });
+        _ = p.next_token();
+    }
+    const tok = p.peek_token();
+    if (tok.type != .assign and tok.type != .colon) {
+        return ParseError.ExpectedSeparator;
+    }
+
+    const mutability = p.ast.assignMutability(tok);
+    _ = p.next_token();
+
+    const val = try parse_expression(p, .lowest);
+
+    return p.ast.addNode(p.allocator, .{
+        .var_decl = .{
+            .variability = variability,
+            .name = name,
+            .type_expr = type_expr,
+            .mutability = mutability,
+            .initializer = val,
+        }
+    });
+
 }
 
 fn parse_expression(p: *Parser, minimum: Precedence) ParseError!NodeIndex {
@@ -206,7 +252,14 @@ fn parse_func(p: *Parser) ParseError!NodeIndex {
         .name = name,
         .args = args,
         .return_type = null,
+        .return_variability = parse_variability(p),
     };
+
+    if (signature.return_variability != null and
+        p.peek_token().type != .ident and p.peek_token().type != .question)
+    {
+        return ParseError.ExpectedParameterType;
+    }
 
     if (p.peek_token().type != .lbrace) {
         switch (p.peek_token().type) {
@@ -263,14 +316,25 @@ fn parse_func(p: *Parser) ParseError!NodeIndex {
     });
 }
 
+fn parse_variability(p: *Parser) ?ast.Variability {
+    const token = p.peek_token();
+    if (token.type != .key_uniform and token.type != .key_varying) return null;
+    _ = p.next_token();
+    return p.ast.assignVariability(token);
+}
+
 fn parse_parameters(p: *Parser) ParseError!ast.ParameterRange {
     const start = p.ast.parameters.items.len;
     errdefer p.ast.parameters.items.len = start;
 
     if (p.peek_token().type != .rparen) {
         while (true) {
+            const variability = parse_variability(p);
             if (p.peek_token().type != .ident) return ParseError.ExpectedParameterName;
             const name = @as(u32, @intCast(p.tok_idx));
+            _ = p.next_token();
+
+            if (p.peek_token().type != .colon) return ParseError.ExpectedSeparator;
             _ = p.next_token();
 
             if (p.peek_token().type != .ident) return ParseError.ExpectedParameterType;
@@ -282,6 +346,7 @@ fn parse_parameters(p: *Parser) ParseError!ast.ParameterRange {
             try p.ast.parameters.append(p.allocator, .{
                 .name = name,
                 .type_expr = type_expr,
+                .variability = variability,
             });
 
             if (p.peek_token().type == .rparen) break;
@@ -467,6 +532,34 @@ fn parse_integer_lit(p: *Parser, token: Token) !NodeIndex {
     return node_idx;
 }
 
+test "parse variable declerations" {
+    const allocator = std.testing.allocator;
+    var lexer = Lexer.init("varying foo::7; uniform bar: u8 = 8;");
+    var a: Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
+    defer a.deinit(allocator);
+    var parser = try Parser.init(allocator, &a, &lexer);
+    try parser.parse();
+
+    try std.testing.expectEqual(@as(u32, 2), a.roots.len);
+    const roots = a.extra.items[a.roots.start..][0..a.roots.len];
+    const name = a.nodes.items[roots[0]].var_decl;
+    try std.testing.expectEqualStrings("foo", a.tokenText(name.name));
+    try std.testing.expectEqual(.varying, name.variability);
+    try std.testing.expectEqual(.constant, name.mutability);
+    try std.testing.expect(name.type_expr == null);
+    try std.testing.expectEqual(@as(i64, 7), a.nodes.items[name.initializer].integer.value);
+
+    const bar = a.nodes.items[roots[1]].var_decl;
+    try std.testing.expectEqualStrings("bar", a.tokenText(bar.name));
+    try std.testing.expectEqual(.uniform, bar.variability);
+    try std.testing.expectEqual(.variable, bar.mutability);
+    try std.testing.expect(bar.type_expr != null);
+    const type_expr = a.nodes.items[bar.type_expr.?].identifier;
+    try std.testing.expectEqualStrings("u8", a.tokenText(type_expr.tok_index));
+    try std.testing.expectEqual(@as(i64, 8), a.nodes.items[bar.initializer].integer.value);
+    try std.testing.expectEqual(tok_type.eof, parser.peek_token().type);
+}
+
 test "parse identifiers strings and nested arrays" {
     const allocator = std.testing.allocator;
     var lexer = Lexer.init("name; \"hello\"; []; [1, 2 + 3, [4]];");
@@ -498,10 +591,59 @@ test "parse identifiers strings and nested arrays" {
     try std.testing.expectEqual(tok_type.eof, parser.peek_token().type);
 }
 
+test "function signatures retain parameter and return variability" {
+    const allocator = std.testing.allocator;
+    var lexer = Lexer.init(
+        "fn mixed(uniform count: u32, varying value: u8, plain: bool) varying u8 { return value; }; " ++
+        "fn maybe() uniform ?u8 { return 1; }; " ++
+        "fn fallible() varying u8!error { return 1; }; " ++
+        "fn shared() uniform u8 { return 1; };",
+    );
+    var a: Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
+    defer a.deinit(allocator);
+    var parser = try Parser.init(allocator, &a, &lexer);
+    try parser.parse();
+
+    try std.testing.expectEqual(@as(u32, 4), a.roots.len);
+    const roots = a.extra.items[a.roots.start..][0..a.roots.len];
+    const mixed = a.nodes.items[roots[0]].func_lit.signature;
+    try std.testing.expectEqualStrings("mixed", a.tokenText(mixed.name));
+    try std.testing.expectEqual(.varying, mixed.return_variability.?);
+    try std.testing.expectEqualStrings("u8", a.tokenText(a.nodes.items[mixed.return_type.?].identifier.tok_index));
+    const args = mixed.args.?;
+    try std.testing.expectEqual(@as(u32, 3), args.len);
+    const parameters = a.parameters.items[args.start..][0..args.len];
+    try std.testing.expectEqualStrings("count", a.tokenText(parameters[0].name));
+    try std.testing.expectEqual(.uniform, parameters[0].variability.?);
+    try std.testing.expectEqualStrings("u32", a.tokenText(a.nodes.items[parameters[0].type_expr].identifier.tok_index));
+    try std.testing.expectEqualStrings("value", a.tokenText(parameters[1].name));
+    try std.testing.expectEqual(.varying, parameters[1].variability.?);
+    try std.testing.expectEqualStrings("u8", a.tokenText(a.nodes.items[parameters[1].type_expr].identifier.tok_index));
+    try std.testing.expectEqualStrings("plain", a.tokenText(parameters[2].name));
+    try std.testing.expect(parameters[2].variability == null);
+    try std.testing.expectEqualStrings("bool", a.tokenText(a.nodes.items[parameters[2].type_expr].identifier.tok_index));
+
+    const maybe = a.nodes.items[roots[1]].func_lit.signature;
+    try std.testing.expectEqual(.uniform, maybe.return_variability.?);
+    const optional = a.nodes.items[maybe.return_type.?].optional;
+    try std.testing.expectEqualStrings("u8", a.tokenText(a.nodes.items[optional.child].identifier.tok_index));
+
+    const fallible = a.nodes.items[roots[2]].func_lit.signature;
+    try std.testing.expectEqual(.varying, fallible.return_variability.?);
+    const err_union = a.nodes.items[fallible.return_type.?].err_union;
+    try std.testing.expectEqualStrings("u8", a.tokenText(a.nodes.items[err_union.success].identifier.tok_index));
+    try std.testing.expectEqualStrings("error", a.tokenText(a.nodes.items[err_union.err].identifier.tok_index));
+
+    const shared = a.nodes.items[roots[3]].func_lit.signature;
+    try std.testing.expectEqual(.uniform, shared.return_variability.?);
+    try std.testing.expectEqualStrings("u8", a.tokenText(a.nodes.items[shared.return_type.?].identifier.tok_index));
+    try std.testing.expectEqual(tok_type.eof, parser.peek_token().type);
+}
+
 test "named functions compose with conditionals returns and calls" {
     const allocator = std.testing.allocator;
     var lexer = Lexer.init(
-        "fn choose(x u8, y f64) u32 { if (x < y) { return sum(x, y); } else return values[0]; }; " ++
+        "fn choose(x: u8, y: f64) u32 { if (x < y) { return sum(x, y); } else return values[0]; }; " ++
         "fn empty() { return []; }; choose(2 + 3, 4);",
     );
     var a: Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
@@ -513,9 +655,12 @@ test "named functions compose with conditionals returns and calls" {
     const roots = a.extra.items[a.roots.start..][0..a.roots.len];
     const func = a.nodes.items[roots[0]].func_lit;
     try std.testing.expectEqualStrings("choose", a.tokenText(func.signature.name));
+    try std.testing.expect(func.signature.return_variability == null);
     try std.testing.expectEqualStrings("u32", a.tokenText(a.nodes.items[func.signature.return_type.?].identifier.tok_index));
     const parameters = func.signature.args.?;
     try std.testing.expectEqual(@as(u32, 2), parameters.len);
+    try std.testing.expect(a.parameters.items[parameters.start].variability == null);
+    try std.testing.expect(a.parameters.items[parameters.start + 1].variability == null);
     try std.testing.expectEqualStrings("x", a.tokenText(a.parameters.items[parameters.start].name));
     try std.testing.expectEqualStrings("u8", a.tokenText(a.nodes.items[a.parameters.items[parameters.start].type_expr].identifier.tok_index));
     try std.testing.expectEqualStrings("f64", a.tokenText(a.nodes.items[a.parameters.items[parameters.start + 1].type_expr].identifier.tok_index));
@@ -533,6 +678,7 @@ test "named functions compose with conditionals returns and calls" {
     try std.testing.expectEqualStrings("empty", a.tokenText(empty.signature.name));
     try std.testing.expect(empty.signature.args == null);
     try std.testing.expect(empty.signature.return_type == null);
+    try std.testing.expect(empty.signature.return_variability == null);
     try std.testing.expectEqual(@as(u32, 2), a.parameters.items.len);
     try std.testing.expectEqual(@as(u32, 2), a.nodes.items[roots[2]].call.arguments.len);
     try std.testing.expectEqual(tok_type.eof, parser.peek_token().type);
@@ -557,6 +703,18 @@ test "malformed expressions lists and signatures return errors" {
         .{ "1 + ;", ParseError.ExpectedExpression },
         .{ "fn f() u8 u32 {};", ParseError.ExpectedLeftBrace },
         .{ "fn f() u8 { return 1;", ParseError.ExpectedRightBrace },
+        .{ "fn f(uniform) {};", ParseError.ExpectedParameterName },
+        .{ "fn f(varying x) {};", ParseError.ExpectedSeparator },
+        .{ "fn f(x u8) {};", ParseError.ExpectedSeparator },
+        .{ "fn f(uniform x u8) {};", ParseError.ExpectedSeparator },
+        .{ "fn f(varying x u8) {};", ParseError.ExpectedSeparator },
+        .{ "fn f(x: ) {};", ParseError.ExpectedParameterType },
+        .{ "fn f(varying x: ) {};", ParseError.ExpectedParameterType },
+        .{ "fn f(x:: u8) {};", ParseError.ExpectedParameterType },
+        .{ "fn f(uniform varying x: u8) {};", ParseError.ExpectedParameterName },
+        .{ "fn f() uniform {};", ParseError.ExpectedParameterType },
+        .{ "fn f() varying", ParseError.ExpectedParameterType },
+        .{ "fn f() uniform varying u8 {};", ParseError.ExpectedParameterType },
         .{ "if (x) {} else", ParseError.InvalidCharacter },
         .{ "\"unterminated", ParseError.InvalidCharacter },
         .{ "@;", ParseError.InvalidCharacter },
@@ -572,7 +730,7 @@ test "malformed expressions lists and signatures return errors" {
 
 fn parse_allocation_test(allocator: Allocator) !void {
     var lexer = Lexer.init(
-        "fn f(x u32) u32 { return g([x, h(2)], values[0]); }; " ++
+        "fn f(varying x: u32) varying u32 { return g([x, h(2)], values[0]); }; " ++
         "f([1, [2, 3]][0]);",
     );
     var a: Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
