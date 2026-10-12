@@ -1,7 +1,9 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const types = @import("types.zig");
 const ast = @import("ast.zig");
 const Ast = ast.Ast;
+
+const Allocator = std.mem.Allocator;
 
 const ScopeId = u32;
 pub const SymbolId = u32;
@@ -22,8 +24,14 @@ pub const SymbolTable = struct {
         parameter: u32, // Ast.paramaters index
     };
 
+    pub const ValueInfo = struct {
+        type_id: types.TypeID,
+        variability: ast.Variability,
+    };
+
     pub const Symbol = struct {
         declaration: DeclarationRef,
+        value_info: ?ValueInfo = null,
         scope: ScopeId,
         name: []const u8,
     };

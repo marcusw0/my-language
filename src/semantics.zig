@@ -23,6 +23,7 @@ const AnalyzeError = error{
     ReturnOutsideFunction,
     TypeMismatch,
     VariabilityMismatch,
+    UnsupportedExpression,
 } || SemanticError || Allocator.Error;
 
 const TypeID = types.TypeID;
@@ -120,7 +121,7 @@ pub const Analyzer = struct {
                 if (parameter.variability == null)
                     return AnalyzeError.ExpectedVariability;
 
-                const param_type: ?TypeID = 
+                const param_type: TypeID = 
                     try self.resolveTypeAnnotation(parameter.type_expr);
 
                 const name_txt = self.ast.tokenText(parameter.name);
@@ -130,6 +131,11 @@ pub const Analyzer = struct {
                     name_txt,
                     .{ .parameter = param_idx },
                 );
+                self.symbols.symbols.items[param_id].value_info = .{
+                    .type_id = param_type,
+                    .variability = parameter.variability.?,
+                };
+
                 self.param_symbols[param_idx] = param_id;
             }
         }
@@ -138,6 +144,12 @@ pub const Analyzer = struct {
                 try self.resolveTypeAnnotation(type_expr)
             else
                 null;
+        if (return_type) |exists| {
+            _ = exists;
+            if (func.signature.return_variability == null) {
+                return AnalyzeError.ExpectedVariability;
+            }
+        }
 
         const context = CheckContext{
             .function = .{
@@ -161,9 +173,36 @@ pub const Analyzer = struct {
         index: u32,
         expected_type: ?TypeID,
     ) AnalyzeError!ExpressionInfo {
-        _ = self;
-        _ = index;
         _ = expected_type;
+        const node = self.ast.nodes.items[index];
+        switch (node) {
+            .identifier => |ident| {
+                const name = self.ast.tokenText(ident.tok_index);
+                const sym_id: ?sym.SymbolId = self.symbols.resolve(name);
+                if (sym_id) |id| {
+                    self.node_symbols[index] =  id;
+                } else {
+                    return error.UnknownSymbol;
+                }
+                const symbol = self.symbols.symbols.items[sym_id.?];
+                if (symbol.value_info) |info| {
+                    return .{
+                        .type_id = info.type_id,
+                        .variability = info.variability,
+                    };
+                } else {
+                    return error.UnsupportedExpression;
+                }
+            },
+            .integer => {},
+            .string_lit => {},
+            .array_lit => {},
+            .prefix => {},
+            .infix => {},
+            .index_expr => {},
+            .call => {},
+            else => return error.UnsupportedExpression,
+        }
     }
 
     fn checkStatement(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!void {
@@ -171,9 +210,9 @@ pub const Analyzer = struct {
             switch (statement) {
                 .var_decl => |var_node| {
                     if (var_node.type_expr) |type_expr| {
-                        try self.resolveTypeAnnotation(type_expr);
+                        _ = try self.resolveTypeAnnotation(type_expr);
                     }
-                    try self.checkExpression(var_node.initializer);
+                    try self.checkExpression(var_node.initializer, null);
                     const name = self.ast.tokenText(var_node.name);
                     const id = try self.symbols.define(
                         self.allocator,
@@ -209,9 +248,13 @@ pub const Analyzer = struct {
             returned.expression,
             function.return_type,
         );
+        // TODO
+        _ = actual;
     }
 
-    fn checkAssignable(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!void {}
+    fn checkAssignable(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!void {
+        _ = self; _ = index; _ = context;
+    }
 
     fn resolveTypeAnnotation(self: *Analyzer, index: u32) AnalyzeError!TypeID {
         switch (self.ast.nodes.items[index]) {
@@ -223,11 +266,21 @@ pub const Analyzer = struct {
                 return @intFromEnum(prim);
             },
             .optional => |optional| {
-                const type_id = try self.resolveTypeAnnotation(optional.child);
-                return type_id;
+                const type_opt = try self.resolveTypeAnnotation(optional.child);
+                const requested: types.SemanticType = .{
+                    .optional = type_opt,
+                };
+                const type_id = self.types.findEntry(requested);
+                if (type_id) |id| {
+                    return id;
+                } else {
+                    const new_id = self.types.entries.items.len;
+                    try self.types.entries.append(self.allocator, requested);
+                    return @as(types.TypeID, @intCast(new_id));
+                }
             },
             .err_union => |err_union| {
-                const type_id = try resolveTypeAnnotation(err_union.success);
+                const type_success = try self.resolveTypeAnnotation(err_union.success);
                 const fail = switch (self.ast.nodes.items[err_union.err]) {
                     .identifier => |ident| ident,
                     else => return error.ExpectedErrorType,
@@ -237,7 +290,17 @@ pub const Analyzer = struct {
                 if (error_type != .err) {
                     return error.ExpectedErrorType;
                 }
-                return type_id;
+                const requested: types.SemanticType = .{
+                    .err_union = type_success,
+                };
+                const type_id = self.types.findEntry(requested);
+                if (type_id) |id| {
+                    return id;
+                } else {
+                    const new_id = self.types.entries.items.len;
+                    try self.types.entries.append(self.allocator, requested);
+                    return @as(types.TypeID, @intCast(new_id));
+                }
             },
             else => return error.InvalidCharacter,
         }

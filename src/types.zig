@@ -18,10 +18,7 @@ pub const PrimitiveType = enum {
 pub const SemanticType = union(enum) {
     primitive: PrimitiveType,
     optional: TypeID,
-    err_union: struct {
-        success: TypeID,
-        err: TypeID,
-    },
+    err_union: TypeID,
 };
 
 pub const primitive_types = std.StaticStringMap(PrimitiveType).initComptime(.{
@@ -59,5 +56,38 @@ pub const TypeTable = struct {
 
     pub fn deinit(self: *TypeTable, allocator: Allocator) void {
         self.entries.deinit(allocator);
+    }
+
+    pub fn findEntry(self: *const TypeTable, requested: SemanticType) ?TypeID {
+        switch (requested) {
+            .optional => |id| {
+                for (self.entries.items, 0..) |entry, i| {
+                    switch (entry) {
+                        .optional => |stored| {
+                            if (stored == id) {
+                                return @as(TypeID, @intCast(i));
+                            }
+                        },
+                        else => {},
+
+                    }
+                }
+            },
+            .err_union => |id| {
+                for (self.entries.items, 0..) |entry, i| {
+                    switch (entry) {
+                        .err_union => |stored| {
+                            if (stored == id) {
+                                return @as(TypeID, @intCast(i));
+                            }
+                        },
+                        else => {},
+                    }
+                }
+
+            },
+            else => {},
+        }
+        return null;
     }
 };
