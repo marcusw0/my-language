@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+/// Index of a semantic type description in TypeTable.entries.
 pub const TypeID = u32;
 
 pub const PrimitiveType = enum {
@@ -15,9 +16,12 @@ pub const PrimitiveType = enum {
     err,
 };
 
+/// Resolved type description; compound payloads reference other entries by TypeID.
 pub const SemanticType = union(enum) {
     primitive: PrimitiveType,
+    /// TypeID of the optional's contained type.
     optional: TypeID,
+    /// TypeID of the success type; the failure type is always built-in error.
     err_union: TypeID,
 };
 
@@ -38,8 +42,10 @@ pub fn isPrimitiveType(ident: []const u8) bool {
 }
 
 pub const TypeTable = struct {
+    /// Owned descriptions. Preserve entry positions once their IDs are retained.
     entries: std.ArrayList(SemanticType) = .empty,
 
+    /// Seeds primitive entries in enum order so primitive values match their TypeIDs.
     pub fn init(allocator: Allocator) !TypeTable {
         var table: TypeTable = .{};
         errdefer table.deinit(allocator);
@@ -58,6 +64,8 @@ pub const TypeTable = struct {
         self.entries.deinit(allocator);
     }
 
+    /// Finds an optional/error-union entry with the same variant and payload.
+    /// Returns its TypeID or null; does not append entries. Primitive requests return null.
     pub fn findEntry(self: *const TypeTable, requested: SemanticType) ?TypeID {
         switch (requested) {
             .optional => |id| {

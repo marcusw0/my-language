@@ -5,6 +5,7 @@ const types = @import("types.zig");
 const Token = @import("token.zig").Token;
 
 const SymbolID = sym.SymbolId;
+const ValueInfo = sym.SymbolTable.ValueInfo;
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
@@ -24,30 +25,50 @@ const AnalyzeError = error{
     TypeMismatch,
     VariabilityMismatch,
     UnsupportedExpression,
+    UnsupportedNoType,
+    IntegerOutOfRange,
 } || SemanticError || Allocator.Error;
 
 const TypeID = types.TypeID;
 
+/// Static type and variability facts returned by value-expression checking.
 const ExpressionInfo = struct {
     type_id: TypeID,
     variability: tree.Variability,
 };
 
 const FuncContext = struct {
+    /// Resolved written return annotation; null when the annotation was omitted.
     return_type: ?TypeID,
+    /// Written return qualifier; null when no qualifier was supplied.
     return_variability: ?tree.Variability,
 };
 
 const CheckContext = struct {
+    /// Enclosing function's return contract; null outside a function.
     function: ?FuncContext = null,
 };
 
 pub const Analyzer = struct {
+    /// Owned semantic type descriptions. TypeIDs index this table's entries.
     types: types.TypeTable,
+
+    /// Allocator used to create and free owned tables and binding arrays.
     allocator: Allocator,
+
+    /// Borrowed AST. The AST and source must outlive this analyzer.
     ast: *const tree.Ast,
+
+    /// Owned declaration records and lexical scopes, including resolved value facts.
     symbols: sym.SymbolTable,
+
+    /// Indexed by Ast.nodes. Retains SymbolIDs for declaration nodes and
+    /// resolved identifier uses so later passes can reuse their bindings.
+    /// Null means no binding has been recorded for that node.
     node_symbols: []?SymbolID,
+
+    /// Indexed by absolute positions in Ast.parameters.
+    /// Retains each parameter's declaration SymbolID; null until registered.
     param_symbols: []?SymbolID,
 
     pub fn init(allocator: Allocator, ast: *const tree.Ast) !Analyzer {
@@ -87,6 +108,7 @@ pub const Analyzer = struct {
         self.symbols.deinit(self.allocator);
     }
 
+    /// Visits root function declarations; other root node kinds are currently unsupported.
     pub fn analyze(self: *Analyzer) !void {
         const start = self.ast.roots.start;
         const length = self.ast.roots.len;
@@ -108,6 +130,7 @@ pub const Analyzer = struct {
             self.allocator,
             name,
             .{ .func = index},
+            null,
         );
         self.node_symbols[index] = fn_id;
 
@@ -130,11 +153,11 @@ pub const Analyzer = struct {
                     self.allocator,
                     name_txt,
                     .{ .parameter = param_idx },
+                    .{
+                        .type_id = param_type,
+                        .variability = parameter.variability.?,
+                    },
                 );
-                self.symbols.symbols.items[param_id].value_info = .{
-                    .type_id = param_type,
-                    .variability = parameter.variability.?,
-                };
 
                 self.param_symbols[param_idx] = param_id;
             }
@@ -160,6 +183,7 @@ pub const Analyzer = struct {
         try self.checkBlock(func.body, context);
     }
 
+    /// Visits a block's statements using the caller's active scope and checking context.
     fn checkBlock(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!void {
         const block = self.ast.nodes.items[index].block;
         const statements = self.ast.extra.items[block.statements.start..][0..block.statements.len];
@@ -168,12 +192,14 @@ pub const Analyzer = struct {
         }
     }
 
+    /// Returns expression facts and retains bindings for resolved identifier uses.
+    /// expected_type supplies context for integer literals; identifier facts come from symbols.
+    /// Several expression branches are still placeholders.
     fn checkExpression(
         self: *Analyzer,
         index: u32,
         expected_type: ?TypeID,
     ) AnalyzeError!ExpressionInfo {
-        _ = expected_type;
         const node = self.ast.nodes.items[index];
         switch (node) {
             .identifier => |ident| {
@@ -194,7 +220,57 @@ pub const Analyzer = struct {
                     return error.UnsupportedExpression;
                 }
             },
-            .integer => {},
+            .integer => |integer| {
+                const value = integer.value;
+                const expected_id = expected_type orelse
+                    return error.UnsupportedNoType;
+                const expected = self.types.entries.items[expected_id];
+
+                switch (expected) {
+                    .primitive => |primitive| {
+                        switch (primitive) {
+                            .u8 => {
+                                if (std.math.cast(u8, value) == null)
+                                    return error.IntegerOutOfRange;
+
+                                return .{
+                                    .type_id = expected_id,
+                                    .variability = .uniform,
+                                };
+                            },
+                            .u16 => {
+                                if (std.math.cast(u16, value) == null)
+                                    return error.IntegerOutOfRange;
+
+                                return .{
+                                    .type_id = expected_id,
+                                    .variability = .uniform,
+                                };
+                        },
+                            .u32 => {
+                                if (std.math.cast(u32, value) == null)
+                                    return error.IntegerOutOfRange;
+
+                                return .{
+                                    .type_id = expected_id,
+                                    .variability = .uniform,
+                                };
+                        },
+                            .u64 => {
+                                if (std.math.cast(u64, value) == null)
+                                    return error.IntegerOutOfRange;
+
+                                return .{
+                                    .type_id = expected_id,
+                                    .variability = .uniform,
+                                };
+                        },
+                            else => return error.UnsupportedExpression,
+                        }
+                    },
+                    else => return error.UnsupportedExpression,
+                }
+            },
             .string_lit => {},
             .array_lit => {},
             .prefix => {},
@@ -209,16 +285,25 @@ pub const Analyzer = struct {
             const statement = self.ast.nodes.items[index];
             switch (statement) {
                 .var_decl => |var_node| {
+                    var var_type: ?TypeID = null;
                     if (var_node.type_expr) |type_expr| {
-                        _ = try self.resolveTypeAnnotation(type_expr);
+                        var_type = try self.resolveTypeAnnotation(type_expr);
                     }
-                    try self.checkExpression(var_node.initializer, null);
+
+                    const decl_info = try self.checkExpression(var_node.initializer, var_type);
+                    const val_info: ValueInfo = .{
+                        .type_id = decl_info.type_id,
+                        .variability = var_node.variability,
+                    };
+
                     const name = self.ast.tokenText(var_node.name);
                     const id = try self.symbols.define(
                         self.allocator,
                         name,
                         .{ .variable = index },
+                        val_info,
                     );
+
                     self.node_symbols[index] = id;
             },
                 .func_lit => {},
@@ -239,6 +324,7 @@ pub const Analyzer = struct {
 
     }
 
+    /// Checks function context and the returned expression. Compatibility checking is still TODO.
     fn checkReturn(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!void {
         const function = context.function orelse
             return error.ReturnOutsideFunction;
@@ -252,10 +338,13 @@ pub const Analyzer = struct {
         _ = actual;
     }
 
+    /// TODO: implement assignment compatibility checking.
     fn checkAssignable(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!void {
         _ = self; _ = index; _ = context;
     }
 
+    /// Resolves an annotation node in Ast.nodes to a shared semantic TypeID.
+    /// Reuses existing compound descriptions or appends a new one when absent.
     fn resolveTypeAnnotation(self: *Analyzer, index: u32) AnalyzeError!TypeID {
         switch (self.ast.nodes.items[index]) {
             .identifier => |ident| {

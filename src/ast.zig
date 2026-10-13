@@ -1,7 +1,9 @@
 const std = @import("std");
 const token = @import("token.zig");
 
+/// Index into Ast.tokens.
 const TokenIndex = u32;
+/// Index into Ast.nodes.
 const NodeIndex = u32;
 
 pub const Node = union(enum) {
@@ -67,9 +69,12 @@ pub const Prefix = struct {
 };
 
 pub const FuncSignature = struct {
+    /// Range of parameter records in Ast.parameters.
     args: ?ParameterRange,
     name: TokenIndex,
+    /// Annotation node in Ast.nodes; null when no return type was written.
     return_type: ?NodeIndex,
+    /// Written qualifier; null does not select a default variability.
     return_variability: ?Variability = null,
 };
 
@@ -85,6 +90,7 @@ pub const Call = struct {
 };
 
 pub const Parameter = struct {
+    /// Annotation node in Ast.nodes, resolved to a TypeID during analysis.
     type_expr: NodeIndex,
     name: TokenIndex,
     variability: ?Variability = null,
@@ -124,22 +130,32 @@ pub const VarDecl = struct {
     mutability: Mutability,
 };
 
+/// Contiguous range in Ast.extra containing node indices.
 pub const NodeRange = struct {
     start: u32,
     len: u32,
 };
 
+/// Contiguous range of parameter records in Ast.parameters.
 pub const ParameterRange = struct {
     start: u32,
     len: u32,
 };
 
+/// Owns the syntax buffers and borrows the source text they reference.
 pub const Ast = struct {
+    /// Retained source tokens, addressed by TokenIndex.
     tokens: std.ArrayList(token.Token) = .empty,
+    /// Node records, addressed by NodeIndex.
     nodes: std.ArrayList(Node) = .empty,
+    /// Stores lists of child node indices.
+    /// NodeRange selects positions here, not directly in nodes.
     extra: std.ArrayList(NodeIndex) = .empty,
+    /// Parameter records stored separately from nodes, addressed by ParameterRange.
     parameters: std.ArrayList(Parameter) = .empty,
+    /// Range in extra listing the top-level node indices.
     roots: NodeRange,
+    /// Borrowed source bytes; the caller keeps them alive and deinit does not free them.
     source: []const u8,
 
     pub fn addNode(self: *Ast, allocator: std.mem.Allocator, node: Node) !NodeIndex {
@@ -148,12 +164,14 @@ pub const Ast = struct {
         return index;
     }
 
+    /// Copies child indices into extra and returns the range containing that copy.
     pub fn addRange(self: *Ast, allocator: std.mem.Allocator, children: []const NodeIndex) !NodeRange {
         const start: u32 = @intCast(self.extra.items.len);
         try self.extra.appendSlice(allocator, children);
         return NodeRange{ .start = start, .len = @intCast(children.len)};
     }
 
+    /// Returns a borrowed source slice selected by the token's byte offsets.
     pub fn tokenText(self: *const Ast, index: TokenIndex) []const u8 {
         const tok = self.tokens.items[index];
         return self.source[tok.byte_start..tok.byte_end];
