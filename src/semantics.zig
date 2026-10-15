@@ -271,12 +271,12 @@ pub const Analyzer = struct {
                     else => return error.UnsupportedExpression,
                 }
             },
-            .string_lit => {},
-            .array_lit => {},
-            .prefix => {},
-            .infix => {},
-            .index_expr => {},
-            .call => {},
+            .string_lit => return error.UnsupportedExpression,
+            .array_lit => return error.UnsupportedExpression,
+            .prefix => return error.UnsupportedExpression,
+            .infix => return error.UnsupportedExpression,
+            .index_expr => return error.UnsupportedExpression,
+            .call => return error.UnsupportedExpression,
             else => return error.UnsupportedExpression,
         }
     }
@@ -291,10 +291,13 @@ pub const Analyzer = struct {
                     }
 
                     const decl_info = try self.checkExpression(var_node.initializer, var_type);
+
+
                     const val_info: ValueInfo = .{
-                        .type_id = decl_info.type_id,
+                        .type_id = var_type orelse decl_info.type_id,
                         .variability = var_node.variability,
                     };
+                    try checkAssignable(val_info, decl_info);
 
                     const name = self.ast.tokenText(var_node.name);
                     const id = try self.symbols.define(
@@ -324,23 +327,30 @@ pub const Analyzer = struct {
 
     }
 
-    /// Checks function context and the returned expression. Compatibility checking is still TODO.
+    /// Checks function context and the returned expression.
     fn checkReturn(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!void {
         const function = context.function orelse
             return error.ReturnOutsideFunction;
+
+        const return_type = function.return_type orelse
+            return error.UnsupportedNoType;
+
+        const return_variability = function.return_variability orelse
+            return error.ExpectedVariability;
 
         const returned = self.ast.nodes.items[index].return_expr;
         const actual = try self.checkExpression(
             returned.expression,
             function.return_type,
         );
-        // TODO
-        _ = actual;
-    }
 
-    /// TODO: implement assignment compatibility checking.
-    fn checkAssignable(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!void {
-        _ = self; _ = index; _ = context;
+        const expected: ValueInfo = .{
+            .type_id = return_type,
+            .variability = return_variability,
+        };
+
+        try checkAssignable(expected, actual);
+
     }
 
     /// Resolves an annotation node in Ast.nodes to a shared semantic TypeID.
@@ -400,13 +410,13 @@ test "function annotations validate parameter records and return types" {
     const Lexer = @import("token.zig").Lexer;
     const Parser = @import("parser.zig").Parser;
     const cases = [_]struct { source: [:0]const u8, expected: ?SemanticError }{
-        .{ .source = "fn first(uniform x: u8, varying y: f64) uniform u8!error { return x; }; fn second(varying z: bool) varying ?u8 { return 1; };", .expected = null },
-        .{ .source = "fn empty() { return 1; };", .expected = null },
-        .{ .source = "fn bad(uniform x: banana) uniform u8 { return 1; };", .expected = error.ExpectedPrimitiveType },
-        .{ .source = "fn bad() varying banana { return 1; };", .expected = error.ExpectedPrimitiveType },
-        .{ .source = "fn bad() uniform ?banana { return 1; };", .expected = error.ExpectedPrimitiveType },
-        .{ .source = "fn bad() varying u8!f64 { return 1; };", .expected = error.ExpectedErrorType },
-        .{ .source = "fn bad() uniform u8!banana { return 1; };", .expected = error.ExpectedErrorType },
+        .{ .source = "fn first(uniform x: u8, varying y: f64) uniform u8!error {}; fn second(varying z: bool) varying ?u8 {};", .expected = null },
+        .{ .source = "fn empty() {};", .expected = null },
+        .{ .source = "fn bad(uniform x: banana) uniform u8 {};", .expected = error.ExpectedPrimitiveType },
+        .{ .source = "fn bad() varying banana {};", .expected = error.ExpectedPrimitiveType },
+        .{ .source = "fn bad() uniform ?banana {};", .expected = error.ExpectedPrimitiveType },
+        .{ .source = "fn bad() varying u8!f64 {};", .expected = error.ExpectedErrorType },
+        .{ .source = "fn bad() uniform u8!banana {};", .expected = error.ExpectedErrorType },
     };
     for (cases) |case| {
         var lexer = Lexer.init(case.source);
@@ -458,5 +468,14 @@ test "function annotations require explicit variability" {
         } else {
             try analyzer.analyze();
         }
+    }
+}
+
+fn checkAssignable(expected: ValueInfo, actual: ExpressionInfo) AnalyzeError!void {
+    if (expected.type_id != actual.type_id) {
+        return error.TypeMismatch;
+    }
+    if (expected.variability != actual.variability) {
+        return error.VariabilityMismatch;
     }
 }
