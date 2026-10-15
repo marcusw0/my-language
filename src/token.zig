@@ -45,7 +45,6 @@ pub const keywords = std.StaticStringMap(Type).initComptime(.{
     .{ "varying", .key_varying },
 });
 
-
 pub const Token = struct {
     type: Type,
     /// Start byte offset in the lexer source buffer.
@@ -121,7 +120,7 @@ pub const Lexer = struct {
                     return .{
                         .type = .eof,
                         .byte_start = self.index,
-                        .byte_end = self.index
+                        .byte_end = self.index,
                     };
                 }
 
@@ -153,7 +152,9 @@ pub const Lexer = struct {
                         if (self.buffer[self.index] == '=') {
                             tok.type = .not_eq;
                             self.index += 1;
-                        } else { tok.type = .bang; }
+                        } else {
+                            tok.type = .bang;
+                        }
                     },
                     '?' => {
                         tok.type = .question;
@@ -269,15 +270,13 @@ pub const Lexer = struct {
                     else => {
                         self.index += 1;
                         continue :state .string_lit;
-                    }
-
+                    },
                 }
             },
         }
         tok.byte_end = self.index;
         return tok;
     }
-
 };
 
 test "lexing typed assignment" {
@@ -332,15 +331,10 @@ test "equal variants" {
         \\=
         \\==
         \\!=
-        ;
+    ;
     var lexer = Lexer.init(source);
 
-    const expected = [_]Type{
-        .assign,
-        .eq,
-        .not_eq,
-        .eof
-    };
+    const expected = [_]Type{ .assign, .eq, .not_eq, .eof };
 
     for (expected) |kind| {
         const token = lexer.nextToken();

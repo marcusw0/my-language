@@ -23,6 +23,11 @@ pub const SemanticType = union(enum) {
     optional: TypeID,
     /// TypeID of the success type; the failure type is always built-in error.
     err_union: TypeID,
+
+    array: struct {
+        element_type: TypeID,
+        len: u32,
+    },
 };
 
 pub const primitive_types = std.StaticStringMap(PrimitiveType).initComptime(.{
@@ -77,7 +82,6 @@ pub const TypeTable = struct {
                             }
                         },
                         else => {},
-
                     }
                 }
             },
@@ -92,7 +96,20 @@ pub const TypeTable = struct {
                         else => {},
                     }
                 }
-
+            },
+            .array => |id| {
+                for (self.entries.items, 0..) |entry, i| {
+                    switch (entry) {
+                        .array => |stored| {
+                            if (stored.element_type == id.element_type and
+                                stored.len == id.len)
+                            {
+                                return @as(TypeID, @intCast(i));
+                            }
+                        },
+                        else => {},
+                    }
+                }
             },
             else => {},
         }

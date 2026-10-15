@@ -27,14 +27,14 @@ const ParseError = error{
 
 const Precedence = enum {
     lowest,
-    equals,      // ==
+    equals, // ==
     lessgreater, // > or <
-    fallback,    // orelse
-    sum,         // +
-    product,     // *
-    prefix,      // -X or !X
-    call,        // myFunction(X)
-    index,       // array[index]
+    fallback, // orelse
+    sum, // +
+    product, // *
+    prefix, // -X or !X
+    call, // myFunction(X)
+    index, // array[index]
 };
 
 fn precedence(token: Token) Precedence {
@@ -49,8 +49,6 @@ fn precedence(token: Token) Precedence {
         else => .lowest,
     };
 }
-
-
 
 pub const Parser = struct {
     /// Position of the next unconsumed token in Ast.tokens.
@@ -68,7 +66,10 @@ pub const Parser = struct {
 
         while (true) {
             const token = l.nextToken();
-            if (token.type == .eof) { eof = token; break; }
+            if (token.type == .eof) {
+                eof = token;
+                break;
+            }
             try a.tokens.append(allocator, token);
         }
         try a.tokens.append(allocator, eof);
@@ -132,7 +133,7 @@ fn parseStatement(p: *Parser) ParseError!NodeIndex {
             }
             _ = p.nextToken();
             return index;
-        }
+        },
     }
 }
 
@@ -169,16 +170,13 @@ fn parseVarDecl(p: *Parser) ParseError!NodeIndex {
 
     const val = try parseExpression(p, .lowest);
 
-    return p.ast.addNode(p.allocator, .{
-        .var_decl = .{
-            .variability = variability,
-            .name = name,
-            .type_expr = type_expr,
-            .mutability = mutability,
-            .initializer = val,
-        }
-    });
-
+    return p.ast.addNode(p.allocator, .{ .var_decl = .{
+        .variability = variability,
+        .name = name,
+        .type_expr = type_expr,
+        .mutability = mutability,
+        .initializer = val,
+    } });
 }
 
 /// Parses an expression, extending it while the next operator's precedence exceeds minimum.
@@ -227,8 +225,9 @@ fn parseExpression(p: *Parser, minimum: Precedence) ParseError!NodeIndex {
         else => return error.ExpectedExpression,
     };
 
-    while (@intFromEnum(precedence(p.peekToken())) >
-        @intFromEnum(minimum)) {
+    while (@backingInt(precedence(p.peekToken())) >
+        @backingInt(minimum))
+    {
         left_idx = switch (p.peekToken().type) {
             .lparen => try parseCall(p, left_idx),
             .lbracket => try parseIndex(p, left_idx),
@@ -285,12 +284,10 @@ fn parseFunc(p: *Parser) ParseError!NodeIndex {
                         const err = try p.ast.addNode(p.allocator, .{
                             .identifier = .{ .tok_index = @intCast(p.tok_idx) },
                         });
-                        signature.return_type = try p.ast.addNode(p.allocator, .{
-                            .err_union = .{
-                                .success = id,
-                                .err = err,
-                            }
-                        });
+                        signature.return_type = try p.ast.addNode(p.allocator, .{ .err_union = .{
+                            .success = id,
+                            .err = err,
+                        } });
                     } else return ParseError.ExpectedParameterType;
                     _ = p.nextToken();
                 } else {
@@ -319,12 +316,10 @@ fn parseFunc(p: *Parser) ParseError!NodeIndex {
 
     const body = try parseBlock(p);
 
-    return try p.ast.addNode(p.allocator, .{
-        .func_lit = .{
-            .body = body,
-            .signature = signature,
-        }
-    });
+    return try p.ast.addNode(p.allocator, .{ .func_lit = .{
+        .body = body,
+        .signature = signature,
+    } });
 }
 
 fn parseVariability(p: *Parser) ?ast.Variability {
@@ -394,16 +389,13 @@ fn parseIf(p: *Parser) ParseError!NodeIndex {
             return ParseError.InvalidCharacter;
         }
         alternative = try parseBlock(p);
-
     }
-    return try p.ast.addNode(p.allocator, .{
-        .if_expr = .{
-            .tok_index = index,
-            .condition = condition,
-            .consequence = consequence,
-            .alternative = alternative,
-        }
-    });
+    return try p.ast.addNode(p.allocator, .{ .if_expr = .{
+        .tok_index = index,
+        .condition = condition,
+        .consequence = consequence,
+        .alternative = alternative,
+    } });
 }
 
 fn parseBlock(p: *Parser) ParseError!NodeIndex {
@@ -427,12 +419,10 @@ fn parseBlock(p: *Parser) ParseError!NodeIndex {
 
     const range = try p.ast.addRange(p.allocator, node_indices.items);
 
-    return try p.ast.addNode(p.allocator, .{
-        .block = .{
-            .tok_index = index,
-            .statements = range,
-        }
-    });
+    return try p.ast.addNode(p.allocator, .{ .block = .{
+        .tok_index = index,
+        .statements = range,
+    } });
 }
 
 fn parseReturn(p: *Parser) ParseError!NodeIndex {
@@ -440,23 +430,19 @@ fn parseReturn(p: *Parser) ParseError!NodeIndex {
     _ = p.nextToken();
     const expression = try parseExpression(p, .lowest);
 
-    return p.ast.addNode(p.allocator, .{
-        .return_expr = .{
-            .tok_index = index,
-            .expression = expression,
-        }
-    });
+    return p.ast.addNode(p.allocator, .{ .return_expr = .{
+        .tok_index = index,
+        .expression = expression,
+    } });
 }
 
 fn parsePrefix(p: *Parser, token: Token) ParseError!NodeIndex {
     _ = p.nextToken();
     const right = try parseExpression(p, .prefix);
-    return try p.ast.addNode(p.allocator, .{
-        .prefix = .{
-            .operator = token.type,
-            .right = right,
-        }
-    });
+    return try p.ast.addNode(p.allocator, .{ .prefix = .{
+        .operator = token.type,
+        .right = right,
+    } });
 }
 
 fn parseExpressionList(p: *Parser, closing: TokenType) ParseError!ast.NodeRange {
@@ -606,9 +592,9 @@ test "function signatures retain parameter and return variability" {
     const allocator = std.testing.allocator;
     var lexer = Lexer.init(
         "fn mixed(uniform count: u32, varying value: u8, plain: bool) varying u8 { return value; }; " ++
-        "fn maybe() uniform ?u8 { return 1; }; " ++
-        "fn fallible() varying u8!error { return 1; }; " ++
-        "fn shared() uniform u8 { return 1; };",
+            "fn maybe() uniform ?u8 { return 1; }; " ++
+            "fn fallible() varying u8!error { return 1; }; " ++
+            "fn shared() uniform u8 { return 1; };",
     );
     var a: Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
     defer a.deinit(allocator);
@@ -655,7 +641,7 @@ test "named functions compose with conditionals returns and calls" {
     const allocator = std.testing.allocator;
     var lexer = Lexer.init(
         "fn choose(x: u8, y: f64) u32 { if (x < y) { return sum(x, y); } else return values[0]; }; " ++
-        "fn empty() { return []; }; choose(2 + 3, 4);",
+            "fn empty() { return []; }; choose(2 + 3, 4);",
     );
     var a: Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
     defer a.deinit(allocator);
@@ -742,7 +728,7 @@ test "malformed expressions lists and signatures return errors" {
 fn parseAllocationTest(allocator: Allocator) !void {
     var lexer = Lexer.init(
         "fn f(varying x: u32) varying u32 { return g([x, h(2)], values[0]); }; " ++
-        "f([1, [2, 3]][0]);",
+            "f([1, [2, 3]][0]);",
     );
     var a: Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
     defer a.deinit(allocator);
@@ -834,7 +820,6 @@ test "parse prefix" {
 
     try std.testing.expectEqualStrings("-", op.?);
     try std.testing.expectEqual(@as(i64, 5), right);
-
 }
 
 test "parse if expression" {
