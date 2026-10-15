@@ -406,6 +406,132 @@ pub const Analyzer = struct {
     }
 };
 
+fn checkAssignable(expected: ValueInfo, actual: ExpressionInfo) AnalyzeError!void {
+    if (expected.type_id != actual.type_id) {
+        return error.TypeMismatch;
+    }
+    if (expected.variability != actual.variability) {
+        return error.VariabilityMismatch;
+    }
+}
+
+test "function bodies check declarations and returns" {
+    const Lexer = @import("token.zig").Lexer;
+    const Parser = @import("parser.zig").Parser;
+
+    const cases = [_]struct {
+        source: [:0]const u8,
+        expected: ?AnalyzeError,
+    }{
+        .{
+            .source =
+                \\fn f() uniform u8 {
+                \\   uniform x: u8 = 8;
+                \\   return x;
+                \\};
+                ,
+            .expected = null,
+        },
+        .{
+            .source =
+                "fn f(uniform x: u32) uniform u8 { return x; };",
+            .expected = error.TypeMismatch,
+        },
+        .{
+            .source =
+                \\fn f() uniform u8 {
+                \\   uniform x: u8 = 256;
+                \\   return x;
+                \\};
+                ,
+            .expected = error.IntegerOutOfRange,
+        },
+        .{
+            .source =
+                \\fn f() uniform u8 {
+                \\   uniform x: u8 = 255;
+                \\   return x;
+                \\};
+                ,
+            .expected = null,
+        },
+        .{
+            .source =
+                \\fn f(uniform x: u8) uniform u8 {
+                \\   uniform copy := x;
+                \\   return copy;
+                \\};
+                ,
+            .expected = null,
+        },
+        .{
+            .source =
+                \\fn f(uniform x: u32) uniform u8 {
+                \\   uniform copy: u8 = x;
+                \\   return copy;
+                \\};
+                ,
+            .expected = error.TypeMismatch,
+        },
+        .{
+            .source =
+                \\fn f(varying x: u8) uniform u8 {
+                \\   return x;
+                \\};
+                ,
+            .expected = error.VariabilityMismatch,
+        },
+        .{
+            .source =
+                \\fn f(varying x: u8) uniform u8 {
+                \\   uniform copy := x;
+                \\   return copy;
+                \\};
+                ,
+            .expected = error.VariabilityMismatch,
+        },
+        .{
+            .source =
+                \\fn f() uniform u8 {
+                \\   return missing;
+                \\};
+                ,
+            .expected = error.UnknownSymbol,
+        },
+        .{
+            .source =
+                \\fn f() uniform u8 {
+                \\   uniform x: u8 = 1;
+                \\   uniform x: u8 = 2;
+                \\   return x;
+                \\};
+                ,
+            .expected = error.DuplicateSymbol,
+        },
+    };
+
+    for (cases) |case| {
+        var lexer = Lexer.init(case.source);
+        var ast: tree.Ast = .{
+            .source = lexer.buffer,
+            .roots = .{ .start = 0, .len = 0 },
+        };
+        defer ast.deinit(std.testing.allocator);
+
+        var parser = try Parser.init(std.testing.allocator, &ast, &lexer);
+        try parser.parse();
+
+        var analyzer = try Analyzer.init(std.testing.allocator, &ast);
+        defer analyzer.deinit();
+
+        if (case.expected) |expected| {
+            try std.testing.expectError(expected, analyzer.analyze());
+        } else {
+            try analyzer.analyze();
+        }
+    }
+}
+
 test "function annotations validate parameter records and return types" {
     const Lexer = @import("token.zig").Lexer;
     const Parser = @import("parser.zig").Parser;
@@ -468,14 +594,5 @@ test "function annotations require explicit variability" {
         } else {
             try analyzer.analyze();
         }
-    }
-}
-
-fn checkAssignable(expected: ValueInfo, actual: ExpressionInfo) AnalyzeError!void {
-    if (expected.type_id != actual.type_id) {
-        return error.TypeMismatch;
-    }
-    if (expected.variability != actual.variability) {
-        return error.VariabilityMismatch;
     }
 }
