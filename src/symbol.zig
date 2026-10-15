@@ -110,8 +110,8 @@ pub const SymbolTable = struct {
         self: *SymbolTable,
         allocator: Allocator,
         name: []const u8,
-        declaration:DeclarationRef,
-        val_info:?ValueInfo,
+        declaration: DeclarationRef,
+        val_info: ?ValueInfo,
     ) SymbolError!SymbolId {
         const scope = &self.scope.items[self.current];
 
@@ -121,12 +121,7 @@ pub const SymbolTable = struct {
         const prev_len = self.symbols.items.len;
         const id: SymbolId = @intCast(prev_len);
 
-        try self.symbols.append(allocator, .{
-            .declaration = declaration,
-            .value_info = val_info,
-            .scope = self.current,
-            .name = name
-        });
+        try self.symbols.append(allocator, .{ .declaration = declaration, .value_info = val_info, .scope = self.current, .name = name });
         errdefer self.symbols.items.len = prev_len;
         try scope.names.put(allocator, name, id);
 

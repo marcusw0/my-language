@@ -116,7 +116,9 @@ pub const Analyzer = struct {
         for (roots) |val| {
             const node = self.ast.nodes.items[val];
             switch (node) {
-                .func_lit => { try self.checkFunction(val); },
+                .func_lit => {
+                    try self.checkFunction(val);
+                },
                 else => return AnalyzeError.UnsupportedRootNode,
             }
         }
@@ -129,7 +131,7 @@ pub const Analyzer = struct {
         const fn_id = try self.symbols.define(
             self.allocator,
             name,
-            .{ .func = index},
+            .{ .func = index },
             null,
         );
         self.node_symbols[index] = fn_id;
@@ -137,14 +139,13 @@ pub const Analyzer = struct {
         try self.symbols.enterScope(self.allocator);
         defer self.symbols.leaveScope() catch unreachable;
 
-
         if (func.signature.args) |args| {
             const parameters = self.ast.parameters.items[args.start..][0..args.len];
             for (parameters, 0..) |parameter, position| {
                 if (parameter.variability == null)
                     return AnalyzeError.ExpectedVariability;
 
-                const param_type: TypeID = 
+                const param_type: TypeID =
                     try self.resolveTypeAnnotation(parameter.type_expr);
 
                 const name_txt = self.ast.tokenText(parameter.name);
@@ -206,7 +207,7 @@ pub const Analyzer = struct {
                 const name = self.ast.tokenText(ident.tok_index);
                 const sym_id: ?sym.SymbolId = self.symbols.resolve(name);
                 if (sym_id) |id| {
-                    self.node_symbols[index] =  id;
+                    self.node_symbols[index] = id;
                 } else {
                     return error.UnknownSymbol;
                 }
@@ -246,7 +247,7 @@ pub const Analyzer = struct {
                                     .type_id = expected_id,
                                     .variability = .uniform,
                                 };
-                        },
+                            },
                             .u32 => {
                                 if (std.math.cast(u32, value) == null)
                                     return error.IntegerOutOfRange;
@@ -255,7 +256,7 @@ pub const Analyzer = struct {
                                     .type_id = expected_id,
                                     .variability = .uniform,
                                 };
-                        },
+                            },
                             .u64 => {
                                 if (std.math.cast(u64, value) == null)
                                     return error.IntegerOutOfRange;
@@ -264,7 +265,7 @@ pub const Analyzer = struct {
                                     .type_id = expected_id,
                                     .variability = .uniform,
                                 };
-                        },
+                            },
                             else => return error.UnsupportedExpression,
                         }
                     },
@@ -272,7 +273,65 @@ pub const Analyzer = struct {
                 }
             },
             .string_lit => return error.UnsupportedExpression,
-            .array_lit => return error.UnsupportedExpression,
+            .array_lit => |array| {
+                const elements = self.ast.extra.items[array.elements.start..][0..array.elements.len];
+
+                var length: u32 = 0;
+                var elements_type: TypeID = undefined;
+                var elements_variability: tree.Variability = undefined;
+
+                if (elements.len == 0) {
+                    return error.UnsupportedExpression;
+                }
+
+                const expected_element_type: ?TypeID =
+                    if (expected_type) |id|
+                        switch (self.types.entries.items[id]) {
+                            .array => |array_type| array_type.element_type,
+                            else => return error.TypeMismatch,
+                        }
+                    else
+                        null;
+
+                for (elements) |element| {
+                    const element_context: ?TypeID =
+                        if (length == 0) expected_element_type else elements_type;
+
+                    const exp_info = try self.checkExpression(element, element_context);
+                    if (length == 0) {
+                        elements_type = exp_info.type_id;
+                        elements_variability = exp_info.variability;
+                        length += 1;
+                    } else {
+                        if (exp_info.type_id != elements_type) {
+                            return error.TypeMismatch;
+                        }
+                        if (exp_info.variability != elements_variability) {
+                            return error.VariabilityMismatch;
+                        }
+                        length += 1;
+                    }
+                }
+                const semantic_type: types.SemanticType = .{ .array = .{
+                    .element_type = elements_type,
+                    .len = length,
+                } };
+                const entry = self.types.findEntry(semantic_type);
+                if (entry) |id| {
+                    return .{
+                        .type_id = id,
+                        .variability = elements_variability,
+                    };
+                }
+
+                const new_id: TypeID = @intCast(self.types.entries.items.len);
+                try self.types.entries.append(self.allocator, semantic_type);
+
+                return .{
+                    .type_id = new_id,
+                    .variability = elements_variability,
+                };
+            },
             .prefix => return error.UnsupportedExpression,
             .infix => return error.UnsupportedExpression,
             .index_expr => return error.UnsupportedExpression,
@@ -282,49 +341,57 @@ pub const Analyzer = struct {
     }
 
     fn checkStatement(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!void {
-            const statement = self.ast.nodes.items[index];
-            switch (statement) {
-                .var_decl => |var_node| {
-                    var var_type: ?TypeID = null;
-                    if (var_node.type_expr) |type_expr| {
-                        var_type = try self.resolveTypeAnnotation(type_expr);
-                    }
+        const statement = self.ast.nodes.items[index];
+        switch (statement) {
+            .var_decl => |var_node| {
+                var var_type: ?TypeID = null;
+                if (var_node.type_expr) |type_expr| {
+                    var_type = try self.resolveTypeAnnotation(type_expr);
+                }
 
-                    const decl_info = try self.checkExpression(var_node.initializer, var_type);
+                const decl_info = try self.checkExpression(var_node.initializer, var_type);
 
+                const val_info: ValueInfo = .{
+                    .type_id = var_type orelse decl_info.type_id,
+                    .variability = var_node.variability,
+                };
+                try checkAssignable(val_info, decl_info);
 
-                    const val_info: ValueInfo = .{
-                        .type_id = var_type orelse decl_info.type_id,
-                        .variability = var_node.variability,
-                    };
-                    try checkAssignable(val_info, decl_info);
+                const name = self.ast.tokenText(var_node.name);
+                const id = try self.symbols.define(
+                    self.allocator,
+                    name,
+                    .{ .variable = index },
+                    val_info,
+                );
 
-                    const name = self.ast.tokenText(var_node.name);
-                    const id = try self.symbols.define(
-                        self.allocator,
-                        name,
-                        .{ .variable = index },
-                        val_info,
-                    );
-
-                    self.node_symbols[index] = id;
+                self.node_symbols[index] = id;
             },
-                .func_lit => {},
-                .return_expr => try self.checkReturn(index, context),
-                .block => {},
-                .optional, .err_union => {},
-                .identifier,
-                .integer,
-                .string_lit,
-                .array_lit,
-                .infix,
-                .index_expr,
-                .prefix,
-                .call,
-                .if_expr,
-                => {},
-            }
 
+            .func_lit => try self.checkFunction(index),
+
+            .return_expr => try self.checkReturn(index, context),
+
+            .block => {
+                try self.symbols.enterScope(self.allocator);
+                defer self.symbols.leaveScope() catch unreachable;
+
+                try self.checkBlock(index, context);
+            },
+
+            .optional, .err_union => return error.UnsupportedExpression,
+
+            .identifier,
+            .integer,
+            .string_lit,
+            .array_lit,
+            .infix,
+            .index_expr,
+            .prefix,
+            .call,
+            .if_expr,
+            => _ = try self.checkExpression(index, null),
+        }
     }
 
     /// Checks function context and the returned expression.
@@ -350,7 +417,6 @@ pub const Analyzer = struct {
         };
 
         try checkAssignable(expected, actual);
-
     }
 
     /// Resolves an annotation node in Ast.nodes to a shared semantic TypeID.
@@ -362,7 +428,7 @@ pub const Analyzer = struct {
                 const prim = types.primitive_types.get(type_txt) orelse
                     return error.ExpectedPrimitiveType;
 
-                return @intFromEnum(prim);
+                return @backingInt(prim);
             },
             .optional => |optional| {
                 const type_opt = try self.resolveTypeAnnotation(optional.child);
@@ -425,87 +491,86 @@ test "function bodies check declarations and returns" {
     }{
         .{
             .source =
-                \\fn f() uniform u8 {
-                \\   uniform x: u8 = 8;
-                \\   return x;
-                \\};
-                ,
+            \\fn f() uniform u8 {
+            \\   uniform x: u8 = 8;
+            \\   return x;
+            \\};
+            ,
             .expected = null,
         },
         .{
-            .source =
-                "fn f(uniform x: u32) uniform u8 { return x; };",
+            .source = "fn f(uniform x: u32) uniform u8 { return x; };",
             .expected = error.TypeMismatch,
         },
         .{
             .source =
-                \\fn f() uniform u8 {
-                \\   uniform x: u8 = 256;
-                \\   return x;
-                \\};
-                ,
+            \\fn f() uniform u8 {
+            \\   uniform x: u8 = 256;
+            \\   return x;
+            \\};
+            ,
             .expected = error.IntegerOutOfRange,
         },
         .{
             .source =
-                \\fn f() uniform u8 {
-                \\   uniform x: u8 = 255;
-                \\   return x;
-                \\};
-                ,
+            \\fn f() uniform u8 {
+            \\   uniform x: u8 = 255;
+            \\   return x;
+            \\};
+            ,
             .expected = null,
         },
         .{
             .source =
-                \\fn f(uniform x: u8) uniform u8 {
-                \\   uniform copy := x;
-                \\   return copy;
-                \\};
-                ,
+            \\fn f(uniform x: u8) uniform u8 {
+            \\   uniform copy := x;
+            \\   return copy;
+            \\};
+            ,
             .expected = null,
         },
         .{
             .source =
-                \\fn f(uniform x: u32) uniform u8 {
-                \\   uniform copy: u8 = x;
-                \\   return copy;
-                \\};
-                ,
+            \\fn f(uniform x: u32) uniform u8 {
+            \\   uniform copy: u8 = x;
+            \\   return copy;
+            \\};
+            ,
             .expected = error.TypeMismatch,
         },
         .{
             .source =
-                \\fn f(varying x: u8) uniform u8 {
-                \\   return x;
-                \\};
-                ,
+            \\fn f(varying x: u8) uniform u8 {
+            \\   return x;
+            \\};
+            ,
             .expected = error.VariabilityMismatch,
         },
         .{
             .source =
-                \\fn f(varying x: u8) uniform u8 {
-                \\   uniform copy := x;
-                \\   return copy;
-                \\};
-                ,
+            \\fn f(varying x: u8) uniform u8 {
+            \\   uniform copy := x;
+            \\   return copy;
+            \\};
+            ,
             .expected = error.VariabilityMismatch,
         },
         .{
             .source =
-                \\fn f() uniform u8 {
-                \\   return missing;
-                \\};
-                ,
+            \\fn f() uniform u8 {
+            \\   return missing;
+            \\};
+            ,
             .expected = error.UnknownSymbol,
         },
         .{
             .source =
-                \\fn f() uniform u8 {
-                \\   uniform x: u8 = 1;
-                \\   uniform x: u8 = 2;
-                \\   return x;
-                \\};
-                ,
+            \\fn f() uniform u8 {
+            \\   uniform x: u8 = 1;
+            \\   uniform x: u8 = 2;
+            \\   return x;
+            \\};
+            ,
             .expected = error.DuplicateSymbol,
         },
     };

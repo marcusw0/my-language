@@ -168,7 +168,7 @@ pub const Ast = struct {
     pub fn addRange(self: *Ast, allocator: std.mem.Allocator, children: []const NodeIndex) !NodeRange {
         const start: u32 = @intCast(self.extra.items.len);
         try self.extra.appendSlice(allocator, children);
-        return NodeRange{ .start = start, .len = @intCast(children.len)};
+        return NodeRange{ .start = start, .len = @intCast(children.len) };
     }
 
     /// Returns a borrowed source slice selected by the token's byte offsets.
@@ -228,7 +228,7 @@ test "infix node references its operands and operator" {
         .integer = .{ .value = 3 },
     });
     const expression = try ast.addNode(allocator, .{
-         .infix = .{ .left = left, .operator = token.Type.plus, .right = right },
+        .infix = .{ .left = left, .operator = token.Type.plus, .right = right },
     });
 
     ast.roots = try ast.addRange(allocator, &.{expression});
@@ -239,12 +239,12 @@ test "infix node references its operands and operator" {
 
     try std.testing.expectEqual(@as(u32, 1), ast.roots.len);
     try std.testing.expectEqual(
-       @as(i64, 2),
-       ast.nodes.items[infix.left].integer.value,
+        @as(i64, 2),
+        ast.nodes.items[infix.left].integer.value,
     );
     try std.testing.expectEqual(
-       @as(i64, 3),
-       ast.nodes.items[infix.right].integer.value,
+        @as(i64, 3),
+        ast.nodes.items[infix.right].integer.value,
     );
     try std.testing.expectEqualStrings("+", infix_op.?);
 }
@@ -253,9 +253,10 @@ test "AST node layout" {
     std.debug.print("\n{s:<24} {s:>10} {s:>10}\n", .{ "Type", "Size (B)", "Align (B)" });
 
     inline for (.{
-        Node, Identifier, IntegerLiteral, StringLiteral,
-        ArrayLiteral, InfixExpression, IndexExpression, Prefix,
-        FunctionLiteral, Call, Parameter, Block, If, FuncSignature,
+        Node,            Identifier,      IntegerLiteral,  StringLiteral,
+        ArrayLiteral,    InfixExpression, IndexExpression, Prefix,
+        FunctionLiteral, Call,            Parameter,       Block,
+        If,              FuncSignature,
     }) |T| {
         std.debug.print("{s:<24} {d:>10} {d:>10}\n", .{ @typeName(T), @sizeOf(T), @alignOf(T) });
     }
