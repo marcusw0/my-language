@@ -48,7 +48,9 @@ pub const keywords = std.StaticStringMap(Type).initComptime(.{
 
 pub const Token = struct {
     type: Type,
+    /// Start byte offset in the lexer source buffer.
     byte_start: usize,
+    /// Exclusive end byte offset in the lexer source buffer.
     byte_end: usize,
 
     pub fn lookupIdent(ident: []const u8) Type {

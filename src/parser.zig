@@ -53,11 +53,16 @@ fn precedence(token: Token) Precedence {
 
 
 pub const Parser = struct {
+    /// Position of the next unconsumed token in Ast.tokens.
     tok_idx: usize,
+    /// Borrowed lexer consumed while init buffers its remaining tokens.
     lexer: *Lexer,
+    /// Borrowed AST receiving parsed nodes, child-index lists, and parameters.
     ast: *Ast,
+    /// Allocator used for AST buffers and temporary parsing storage.
     allocator: Allocator,
 
+    /// Buffers lexer tokens through EOF in the AST and starts the cursor at token 0.
     pub fn init(allocator: Allocator, a: *Ast, l: *Lexer) !Parser {
         var eof: Token = undefined;
 
@@ -75,6 +80,8 @@ pub const Parser = struct {
         };
     }
 
+    /// Parses remaining statements and stores their root node indices in Ast.extra.
+    /// On success, leaves EOF unconsumed and records the root range in Ast.roots.
     pub fn parse(self: *Parser) !void {
         var root_indices: std.ArrayList(NodeIndex) = .empty;
         defer root_indices.deinit(self.allocator);
@@ -89,11 +96,13 @@ pub const Parser = struct {
         );
     }
 
+    /// Returns the next unconsumed token and advances the cursor.
     fn nextToken(self: *Parser) Token {
         self.tok_idx += 1;
         return self.ast.tokens.items[self.tok_idx - 1];
     }
 
+    /// Returns the next unconsumed token without advancing the cursor.
     fn peekToken(self: *Parser) Token {
         return self.ast.tokens.items[self.tok_idx];
     }
@@ -172,6 +181,8 @@ fn parseVarDecl(p: *Parser) ParseError!NodeIndex {
 
 }
 
+/// Parses an expression, extending it while the next operator's precedence exceeds minimum.
+/// On success, returns its root Ast.nodes index and leaves the first unconsumed token.
 fn parseExpression(p: *Parser, minimum: Precedence) ParseError!NodeIndex {
     const token = p.peekToken();
 
