@@ -22,6 +22,8 @@ const ParseError = error{
     ExpectedSeparator,
     ExpectedParameterName,
     ExpectedParameterType,
+    ExpectedArraySize,
+    ExpectedArrayType,
     InvalidCharacter,
 } || Allocator.Error || std.fmt.ParseIntError;
 
@@ -452,6 +454,7 @@ fn parseExpressionList(p: *Parser, closing: TokenType) ParseError!ast.NodeRange 
     const expected_closing: ParseError = switch (closing) {
         .rparen => ParseError.ExpectedRightParen,
         .rbracket => ParseError.ExpectedRightBracket,
+        .rbrace => ParseError.ExpectedRightBrace,
         else => unreachable,
     };
 
@@ -476,9 +479,36 @@ fn parseExpressionList(p: *Parser, closing: TokenType) ParseError!ast.NodeRange 
 fn parseArrayLit(p: *Parser) ParseError!NodeIndex {
     const index = @as(u32, @intCast(p.tok_idx));
     _ = p.nextToken(); // Consume '['.
-    const elements = try parseExpressionList(p, .rbracket);
+    if (p.peekToken().type != .int) {
+        return error.ExpectedArraySize;
+    }
+    const token = p.nextToken();
+    const buffer: []const u8 = p.ast.source[token.byte_start..token.byte_end];
+    const size = try std.fmt.parseInt(u32, buffer, 0);
+
+    if (p.peekToken().type != .rbracket) {
+        return error.ExpectedRightBracket;
+    }
+    _ = p.nextToken(); // Consume ']'
+
+    if (p.peekToken().type != .ident) {
+        return error.ExpectedArrayType;
+    }
+    const array_type = try parseExpression(p, .lowest);
+
+    if (p.peekToken().type != .lbrace) {
+        return error.ExpectedLeftBrace;
+    }
+    _ = p.nextToken(); // Consume '{'
+
+    const elements = try parseExpressionList(p, .rbrace);
     return try p.ast.addNode(p.allocator, .{
-        .array_lit = .{ .tok_index = index, .elements = elements },
+        .array_lit = .{
+            .tok_index = index,
+            .elements = elements,
+            .length = size,
+            .array_type = array_type,
+        },
     });
 }
 
@@ -557,34 +587,71 @@ test "parse variable declerations" {
     try std.testing.expectEqual(TokenType.eof, parser.peekToken().type);
 }
 
-test "parse identifiers strings and nested arrays" {
+test "parse identifiers and strings" {
     const allocator = std.testing.allocator;
-    var lexer = Lexer.init("name; \"hello\"; []; [1, 2 + 3, [4]];");
+    var lexer = Lexer.init("name; \"hello\";");
     var a: Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
     defer a.deinit(allocator);
     var parser = try Parser.init(allocator, &a, &lexer);
     try parser.parse();
 
-    try std.testing.expectEqual(@as(u32, 4), a.roots.len);
+    try std.testing.expectEqual(@as(u32, 2), a.roots.len);
     const roots = a.extra.items[a.roots.start..][0..a.roots.len];
     const name = a.nodes.items[roots[0]].identifier;
     try std.testing.expectEqualStrings("name", a.tokenText(name.tok_index));
     const string = a.nodes.items[roots[1]].string_lit;
     try std.testing.expectEqualStrings("\"hello\"", a.tokenText(string.tok_index));
-    try std.testing.expectEqual(@as(u32, 0), a.nodes.items[roots[2]].array_lit.elements.len);
+    try std.testing.expectEqual(TokenType.eof, parser.peekToken().type);
+}
 
-    const array = a.nodes.items[roots[3]].array_lit;
+test "parse arrays" {
+    const allocator = std.testing.allocator;
+    var lexer = Lexer.init(
+        \\uniform values := [3]u8{ 3, 8, 5 };
+        \\uniform value :: [2]u8{ a, b };
+    );
+    var a: Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
+    defer a.deinit(allocator);
+    var parser = try Parser.init(allocator, &a, &lexer);
+    try parser.parse();
+
+    try std.testing.expectEqual(@as(u32, 2), a.roots.len);
+    const roots = a.extra.items[a.roots.start..][0..a.roots.len];
+    const variable = a.nodes.items[roots[0]].var_decl;
+    try std.testing.expectEqualStrings("values", a.tokenText(variable.name));
+    try std.testing.expectEqual(.uniform, variable.variability);
+    try std.testing.expectEqual(.variable, variable.mutability);
+    try std.testing.expect(variable.type_expr == null);
+
+    const array = a.nodes.items[variable.initializer].array_lit;
     try std.testing.expectEqualStrings("[", a.tokenText(array.tok_index));
     try std.testing.expectEqual(@as(u32, 3), array.elements.len);
+    try std.testing.expectEqual(@as(u32, 3), array.length);
+    const array_type = a.nodes.items[array.array_type].identifier;
+    try std.testing.expectEqualStrings("u8", a.tokenText(array_type.tok_index));
     const elements = a.extra.items[array.elements.start..][0..array.elements.len];
-    try std.testing.expectEqual(@as(i64, 1), a.nodes.items[elements[0]].integer.value);
-    const sum = a.nodes.items[elements[1]].infix;
-    try std.testing.expectEqual(TokenType.plus, sum.operator);
-    try std.testing.expectEqual(@as(i64, 2), a.nodes.items[sum.left].integer.value);
-    try std.testing.expectEqual(@as(i64, 3), a.nodes.items[sum.right].integer.value);
-    const nested = a.nodes.items[elements[2]].array_lit.elements;
-    try std.testing.expectEqual(@as(u32, 1), nested.len);
-    try std.testing.expectEqual(@as(i64, 4), a.nodes.items[a.extra.items[nested.start]].integer.value);
+    try std.testing.expectEqual(@as(i64, 3), a.nodes.items[elements[0]].integer.value);
+    try std.testing.expectEqual(@as(i64, 8), a.nodes.items[elements[1]].integer.value);
+    try std.testing.expectEqual(@as(i64, 5), a.nodes.items[elements[2]].integer.value);
+
+    const constant = a.nodes.items[roots[1]].var_decl;
+    try std.testing.expectEqualStrings("value", a.tokenText(constant.name));
+    try std.testing.expectEqual(.uniform, constant.variability);
+    try std.testing.expectEqual(.constant, constant.mutability);
+    try std.testing.expect(constant.type_expr == null);
+
+    const constant_array = a.nodes.items[constant.initializer].array_lit;
+    try std.testing.expectEqualStrings("[", a.tokenText(constant_array.tok_index));
+    try std.testing.expectEqual(@as(u32, 2), constant_array.elements.len);
+    try std.testing.expectEqual(@as(u32, 2), constant_array.length);
+    const constant_array_type = a.nodes.items[constant_array.array_type].identifier;
+    try std.testing.expectEqualStrings("u8", a.tokenText(constant_array_type.tok_index));
+    const constant_elements = a.extra.items[constant_array.elements.start..][0..constant_array.elements.len];
+    const first = a.nodes.items[constant_elements[0]].identifier;
+    const second = a.nodes.items[constant_elements[1]].identifier;
+    try std.testing.expectEqualStrings("a", a.tokenText(first.tok_index));
+    try std.testing.expectEqualStrings("b", a.tokenText(second.tok_index));
+
     try std.testing.expectEqual(TokenType.eof, parser.peekToken().type);
 }
 
@@ -641,7 +708,7 @@ test "named functions compose with conditionals returns and calls" {
     const allocator = std.testing.allocator;
     var lexer = Lexer.init(
         "fn choose(x: u8, y: f64) u32 { if (x < y) { return sum(x, y); } else return values[0]; }; " ++
-            "fn empty() { return []; }; choose(2 + 3, 4);",
+            "fn empty() { return [0]u8{}; }; choose(2 + 3, 4);",
     );
     var a: Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
     defer a.deinit(allocator);
@@ -676,6 +743,14 @@ test "named functions compose with conditionals returns and calls" {
     try std.testing.expect(empty.signature.args == null);
     try std.testing.expect(empty.signature.return_type == null);
     try std.testing.expect(empty.signature.return_variability == null);
+    const empty_statements = a.nodes.items[empty.body].block.statements;
+    try std.testing.expectEqual(@as(u32, 1), empty_statements.len);
+    const empty_return = a.nodes.items[a.extra.items[empty_statements.start]].return_expr;
+    const empty_array = a.nodes.items[empty_return.expression].array_lit;
+    try std.testing.expectEqual(@as(u64, 0), empty_array.length);
+    try std.testing.expectEqual(@as(u32, 0), empty_array.elements.len);
+    const empty_array_type = a.nodes.items[empty_array.array_type].identifier;
+    try std.testing.expectEqualStrings("u8", a.tokenText(empty_array_type.tok_index));
     try std.testing.expectEqual(@as(u32, 2), a.parameters.items.len);
     try std.testing.expectEqual(@as(u32, 2), a.nodes.items[roots[2]].call.arguments.len);
     try std.testing.expectEqual(TokenType.eof, parser.peekToken().type);
@@ -685,10 +760,16 @@ test "malformed expressions lists and signatures return errors" {
     const allocator = std.testing.allocator;
     const cases = .{
         .{ "[1", ParseError.ExpectedRightBracket },
-        .{ "[", ParseError.ExpectedRightBracket },
-        .{ "[1 2];", ParseError.ExpectedSeparator },
-        .{ "[1,];", ParseError.ExpectedExpression },
-        .{ "[1,,2];", ParseError.ExpectedExpression },
+        .{ "[", ParseError.ExpectedArraySize },
+        .{ "[]u8{};", ParseError.ExpectedArraySize },
+        .{ "[1 2]u8{};", ParseError.ExpectedRightBracket },
+        .{ "[1]", ParseError.ExpectedArrayType },
+        .{ "[1]u8;", ParseError.ExpectedLeftBrace },
+        .{ "[1]u8{", ParseError.ExpectedRightBrace },
+        .{ "[1]u8{1", ParseError.ExpectedRightBrace },
+        .{ "[2]u8{1 2};", ParseError.ExpectedSeparator },
+        .{ "[1]u8{1,};", ParseError.ExpectedExpression },
+        .{ "[2]u8{1,,2};", ParseError.ExpectedExpression },
         .{ "f(1", ParseError.ExpectedRightParen },
         .{ "f(", ParseError.ExpectedRightParen },
         .{ "f(1 2);", ParseError.ExpectedSeparator },
@@ -727,8 +808,8 @@ test "malformed expressions lists and signatures return errors" {
 
 fn parseAllocationTest(allocator: Allocator) !void {
     var lexer = Lexer.init(
-        "fn f(varying x: u32) varying u32 { return g([x, h(2)], values[0]); }; " ++
-            "f([1, [2, 3]][0]);",
+        "fn f(varying x: u32) varying u32 { return g([2]u32{ x, h(2) }, values[0]); }; " ++
+            "f([2]u8{ 1, [2]u8{ 2, 3 }[0] }[0]);",
     );
     var a: Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
     defer a.deinit(allocator);
