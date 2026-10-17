@@ -3,6 +3,7 @@ const Lexer = @import("token.zig").Lexer;
 const Ast = @import("ast.zig").Ast;
 const NodeRange = @import("ast.zig").NodeRange;
 const Parser = @import("parser.zig").Parser;
+const Analyzer = @import("semantics.zig").Analyzer;
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -34,6 +35,9 @@ pub fn main(init: std.process.Init) !void {
     var parser = try Parser.init(init.gpa, &ast, &lexer);
     try parser.parse();
 
+    var analyzer = try Analyzer.init(init.gpa, &ast);
+    defer analyzer.deinit();
+    try analyzer.analyze();
     // while (true) {
     //     const token = lexer.nextToken();
     //     if (token.type == .eof) break;
