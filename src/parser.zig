@@ -528,7 +528,7 @@ fn parseIndex(p: *Parser, left: NodeIndex) ParseError!NodeIndex {
     if (p.peekToken().type != .rbracket) return ParseError.ExpectedRightBracket;
     _ = p.nextToken(); // Consume ']'.
     return try p.ast.addNode(p.allocator, .{
-        .index_expr = .{ .tok_index = index, .left = left, .idx = idx },
+        .index_expr = .{ .tok_index = index, .target = left, .index = idx },
     });
 }
 
@@ -737,7 +737,7 @@ test "named functions compose with conditionals returns and calls" {
     const returned = a.nodes.items[a.extra.items[consequence.start]].return_expr.expression;
     try std.testing.expectEqual(@as(u32, 2), a.nodes.items[returned].call.arguments.len);
     const alternative = a.nodes.items[conditional.alternative.?].return_expr.expression;
-    try std.testing.expectEqual(@as(i64, 0), a.nodes.items[a.nodes.items[alternative].index_expr.idx].integer.value);
+    try std.testing.expectEqual(@as(i64, 0), a.nodes.items[a.nodes.items[alternative].index_expr.index].integer.value);
     const empty = a.nodes.items[roots[1]].func_lit;
     try std.testing.expectEqualStrings("empty", a.tokenText(empty.signature.name));
     try std.testing.expect(empty.signature.args == null);

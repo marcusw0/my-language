@@ -69,6 +69,14 @@ pub const TypeTable = struct {
         self.entries.deinit(allocator);
     }
 
+    /// Returns the TypeID of a primitive seeded by init.
+    /// The enum-to-table-position convention stays inside TypeTable.
+    pub fn primitiveId(self: *const TypeTable, primitive: PrimitiveType) TypeID {
+        const id: TypeID = @backingInt(primitive);
+        std.debug.assert(self.entries.items[id].primitive == primitive);
+        return id;
+    }
+
     /// Finds an optional/error-union entry with the same variant and payload.
     /// Returns its TypeID or null; does not append entries. Primitive requests return null.
     pub fn findEntry(self: *const TypeTable, requested: SemanticType) ?TypeID {
@@ -116,3 +124,18 @@ pub const TypeTable = struct {
         return null;
     }
 };
+
+test "primitive IDs identify seeded types after compound insertion" {
+    const allocator = std.testing.allocator;
+    var table = try TypeTable.init(allocator);
+    defer table.deinit(allocator);
+
+    const u32_id = table.primitiveId(.u32);
+    try table.entries.append(allocator, .{ .optional = table.primitiveId(.u8) });
+
+    try std.testing.expectEqual(u32_id, table.primitiveId(.u32));
+    for (std.meta.tags(PrimitiveType)) |primitive| {
+        const id = table.primitiveId(primitive);
+        try std.testing.expectEqual(primitive, table.entries.items[id].primitive);
+    }
+}
