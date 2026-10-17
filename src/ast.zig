@@ -48,6 +48,8 @@ pub const StringLiteral = struct {
 
 pub const ArrayLiteral = struct {
     elements: NodeRange,
+    length: u32,
+    array_type: NodeIndex,
     tok_index: TokenIndex,
 };
 

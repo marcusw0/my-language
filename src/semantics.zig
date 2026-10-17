@@ -19,6 +19,7 @@ const SemanticError = error{
 
 const AnalyzeError = error{
     AtRootNode,
+    ArraySizeMismatch,
     DuplicateSymbol,
     UnknownSymbol,
     ReturnOutsideFunction,
@@ -276,45 +277,38 @@ pub const Analyzer = struct {
             .array_lit => |array| {
                 const elements = self.ast.extra.items[array.elements.start..][0..array.elements.len];
 
-                var length: u32 = 0;
-                var elements_type: TypeID = undefined;
-                var elements_variability: tree.Variability = undefined;
+                const elements_len = @as(u32, @intCast(elements.len));
+                const declared_length = array.length;
 
-                if (elements.len == 0) {
+                if (elements_len == 0) {
                     return error.UnsupportedExpression;
                 }
+                if (elements_len != declared_length) {
+                    return error.ArraySizeMismatch;
+                }
 
-                const expected_element_type: ?TypeID =
-                    if (expected_type) |id|
-                        switch (self.types.entries.items[id]) {
-                            .array => |array_type| array_type.element_type,
-                            else => return error.TypeMismatch,
-                        }
-                    else
-                        null;
+                const elements_type: TypeID =
+                    try self.resolveTypeAnnotation(array.array_type);
 
-                for (elements) |element| {
-                    const element_context: ?TypeID =
-                        if (length == 0) expected_element_type else elements_type;
+                var elements_variability: tree.Variability = undefined;
 
-                    const exp_info = try self.checkExpression(element, element_context);
-                    if (length == 0) {
-                        elements_type = exp_info.type_id;
+                for (elements, 0..) |element, i| {
+                    const exp_info = try self.checkExpression(element, elements_type);
+
+                    if (i == 0) {
                         elements_variability = exp_info.variability;
-                        length += 1;
-                    } else {
-                        if (exp_info.type_id != elements_type) {
-                            return error.TypeMismatch;
-                        }
-                        if (exp_info.variability != elements_variability) {
-                            return error.VariabilityMismatch;
-                        }
-                        length += 1;
+                    }
+                    if (elements_type != exp_info.type_id) {
+                        return error.TypeMismatch;
+                    }
+                    if (exp_info.variability != elements_variability) {
+                        return error.VariabilityMismatch;
                     }
                 }
+
                 const semantic_type: types.SemanticType = .{ .array = .{
                     .element_type = elements_type,
-                    .len = length,
+                    .len = declared_length,
                 } };
                 const entry = self.types.findEntry(semantic_type);
                 if (entry) |id| {
@@ -595,6 +589,31 @@ test "function bodies check declarations and returns" {
             try analyzer.analyze();
         }
     }
+}
+
+test "array literals resolve element type and length" {
+    const Lexer = @import("token.zig").Lexer;
+    const Parser = @import("parser.zig").Parser;
+    const allocator = std.testing.allocator;
+
+    var lexer = Lexer.init("[3]u8{ 3, 8, 5 };");
+    var ast: tree.Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
+    defer ast.deinit(allocator);
+    var parser = try Parser.init(allocator, &ast, &lexer);
+    try parser.parse();
+
+    var analyzer = try Analyzer.init(allocator, &ast);
+    defer analyzer.deinit();
+    const root = ast.extra.items[ast.roots.start];
+    const info = try analyzer.checkExpression(root, null);
+    const array_type = analyzer.types.entries.items[info.type_id].array;
+
+    try std.testing.expectEqual(@as(u32, 3), array_type.len);
+    try std.testing.expectEqual(
+        types.PrimitiveType.u8,
+        analyzer.types.entries.items[array_type.element_type].primitive,
+    );
+    try std.testing.expectEqual(tree.Variability.uniform, info.variability);
 }
 
 test "function annotations validate parameter records and return types" {
