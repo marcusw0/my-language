@@ -61,8 +61,8 @@ pub const InfixExpression = struct {
 
 pub const IndexExpression = struct {
     tok_index: TokenIndex,
-    left: NodeIndex,
-    idx: NodeIndex,
+    target: NodeIndex,
+    index: NodeIndex,
 };
 
 pub const Prefix = struct {

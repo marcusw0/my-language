@@ -328,7 +328,28 @@ pub const Analyzer = struct {
             },
             .prefix => return error.UnsupportedExpression,
             .infix => return error.UnsupportedExpression,
-            .index_expr => return error.UnsupportedExpression,
+            .index_expr => |index_expr| {
+                const target = try self.checkExpression(index_expr.target, null);
+                const prim_id = self.types.primitiveId(.u32);
+                const index_parameter = try self.checkExpression(index_expr.index, prim_id);
+
+                if (prim_id != index_parameter.type_id) {
+                    return error.TypeMismatch;
+                }
+                if (index_parameter.variability != .uniform) {
+                    return error.VariabilityMismatch;
+                }
+
+                const semantic_type = self.types.entries.items[target.type_id];
+                if (semantic_type != .array) {
+                    return error.UnsupportedExpression;
+                }
+
+                return .{
+                    .type_id = semantic_type.array.element_type,
+                    .variability = target.variability,
+                };
+            },
             .call => return error.UnsupportedExpression,
             else => return error.UnsupportedExpression,
         }
@@ -422,7 +443,7 @@ pub const Analyzer = struct {
                 const prim = types.primitive_types.get(type_txt) orelse
                     return error.ExpectedPrimitiveType;
 
-                return @backingInt(prim);
+                return self.types.primitiveId(prim);
             },
             .optional => |optional| {
                 const type_opt = try self.resolveTypeAnnotation(optional.child);
@@ -488,6 +509,15 @@ test "function bodies check declarations and returns" {
             \\fn f() uniform u8 {
             \\   uniform x: u8 = 8;
             \\   return x;
+            \\};
+            ,
+            .expected = null,
+        },
+        .{
+            .source =
+            \\fn f() uniform u8 {
+            \\   uniform values := [3]u8{ 3, 8, 5 };
+            \\   return values[1];
             \\};
             ,
             .expected = null,
