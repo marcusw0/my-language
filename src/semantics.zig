@@ -327,7 +327,73 @@ pub const Analyzer = struct {
                 };
             },
             .prefix => return error.UnsupportedExpression,
-            .infix => return error.UnsupportedExpression,
+            .infix => |infix| {
+                const is_comparison = switch (infix.operator) {
+                    .plus, .minus, .asterisk, .slash => false,
+                    .lt, .gt, .eq, .not_eq => true,
+                    else => return error.UnsupportedExpression,
+                };
+
+                // Arithmetic can inherit its destination's type.
+                // A comparison's bool result does not determine its operand type.
+                var operand_hint: ?TypeID =
+                    if (is_comparison) null else expected_type;
+
+                for ([_]u32{ infix.left, infix.right }) |operand| {
+                    if (try self.expressionTypeHint(operand)) |hint| {
+                        if (operand_hint) |known| {
+                            if (known != hint) {
+                                return error.TypeMismatch;
+                            }
+                        } else {
+                            operand_hint = hint;
+                        }
+                    }
+                }
+
+                const operand_id = operand_hint orelse
+                    return error.UnsupportedNoType;
+
+                const left_info =
+                    try self.checkExpression(infix.left, operand_id);
+                const right_info =
+                    try self.checkExpression(infix.right, operand_id);
+
+                if (left_info.type_id != operand_id or
+                    right_info.type_id != operand_id)
+                {
+                    return error.TypeMismatch;
+                }
+                if (left_info.variability != right_info.variability) {
+                    return error.VariabilityMismatch;
+                }
+
+                const operand_type = self.types.entries.items[operand_id];
+                const primitive = switch (operand_type) {
+                    .primitive => |primitive| primitive,
+                    else => return error.ExpectedPrimitiveType,
+                };
+
+                switch (primitive) {
+                    .u8, .u16, .u32, .u64 => {},
+
+                    .bool, .err => {
+                        if (infix.operator != .eq and infix.operator != .not_eq) {
+                            return error.UnsupportedExpression;
+                        }
+                    },
+
+                    else => return error.UnsupportedExpression,
+                }
+
+                return .{
+                    .type_id = if (is_comparison)
+                        self.types.primitiveId(.bool)
+                    else
+                        operand_id,
+                    .variability = left_info.variability,
+                };
+            },
             .index_expr => |index_expr| {
                 const target = try self.checkExpression(index_expr.target, null);
                 const prim_id = self.types.primitiveId(.u32);
@@ -352,6 +418,38 @@ pub const Analyzer = struct {
             },
             .call => return error.UnsupportedExpression,
             else => return error.UnsupportedExpression,
+        }
+    }
+
+    fn expressionTypeHint(self: *Analyzer, index: u32) AnalyzeError!?TypeID {
+        switch (self.ast.nodes.items[index]) {
+            .integer => return null,
+
+            .infix => |infix| {
+                switch (infix.operator) {
+                    .plus, .minus, .asterisk, .slash => {
+                        const left = try self.expressionTypeHint(infix.left);
+                        const right = try self.expressionTypeHint(infix.right);
+
+                        if (left) |left_id| {
+                            if (right) |right_id| {
+                                if (left_id != right_id) {
+                                    return error.TypeMismatch;
+                                }
+                            }
+                            return left_id;
+                        }
+
+                        return right;
+                    },
+
+                    .lt, .gt, .eq, .not_eq => return self.types.primitiveId(.bool),
+
+                    else => return error.UnsupportedExpression,
+                }
+            },
+
+            else => return (try self.checkExpression(index, null)).type_id,
         }
     }
 
