@@ -39,7 +39,7 @@ pub const Identifier = struct {
 };
 
 pub const IntegerLiteral = struct {
-    value: i64,
+    value: u64,
 };
 
 pub const StringLiteral = struct {
@@ -241,11 +241,11 @@ test "infix node references its operands and operator" {
 
     try std.testing.expectEqual(@as(u32, 1), ast.roots.len);
     try std.testing.expectEqual(
-        @as(i64, 2),
+        @as(u64, 2),
         ast.nodes.items[infix.left].integer.value,
     );
     try std.testing.expectEqual(
-        @as(i64, 3),
+        @as(u64, 3),
         ast.nodes.items[infix.right].integer.value,
     );
     try std.testing.expectEqualStrings("+", infix_op.?);
