@@ -552,11 +552,25 @@ fn parseInfix(p: *Parser, left_idx: NodeIndex) ParseError!NodeIndex {
 
 fn parseIntegerLit(p: *Parser, token: Token) !NodeIndex {
     const buffer: []const u8 = p.ast.source[token.byte_start..token.byte_end];
-    const value = try std.fmt.parseInt(i64, buffer, 0);
+    const value = try std.fmt.parseInt(u64, buffer, 0);
     const node: Node = .{ .integer = .{ .value = value } };
     const node_idx = try p.ast.addNode(p.allocator, node);
     _ = p.nextToken();
     return node_idx;
+}
+
+test "parse full u64 integer magnitude" {
+    const allocator = std.testing.allocator;
+    var lexer = Lexer.init("18446744073709551615;");
+    var a: Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
+    defer a.deinit(allocator);
+    var parser = try Parser.init(allocator, &a, &lexer);
+    try parser.parse();
+
+    try std.testing.expectEqual(@as(u32, 1), a.roots.len);
+    const root = a.extra.items[a.roots.start];
+    try std.testing.expectEqual(std.math.maxInt(u64), a.nodes.items[root].integer.value);
+    try std.testing.expectEqual(TokenType.eof, parser.peekToken().type);
 }
 
 test "parse variable declerations" {
@@ -574,7 +588,7 @@ test "parse variable declerations" {
     try std.testing.expectEqual(.varying, name.variability);
     try std.testing.expectEqual(.constant, name.mutability);
     try std.testing.expect(name.type_expr == null);
-    try std.testing.expectEqual(@as(i64, 7), a.nodes.items[name.initializer].integer.value);
+    try std.testing.expectEqual(@as(u64, 7), a.nodes.items[name.initializer].integer.value);
 
     const bar = a.nodes.items[roots[1]].var_decl;
     try std.testing.expectEqualStrings("bar", a.tokenText(bar.name));
@@ -583,7 +597,7 @@ test "parse variable declerations" {
     try std.testing.expect(bar.type_expr != null);
     const type_expr = a.nodes.items[bar.type_expr.?].identifier;
     try std.testing.expectEqualStrings("u8", a.tokenText(type_expr.tok_index));
-    try std.testing.expectEqual(@as(i64, 8), a.nodes.items[bar.initializer].integer.value);
+    try std.testing.expectEqual(@as(u64, 8), a.nodes.items[bar.initializer].integer.value);
     try std.testing.expectEqual(TokenType.eof, parser.peekToken().type);
 }
 
@@ -630,9 +644,9 @@ test "parse arrays" {
     const array_type = a.nodes.items[array.array_type].identifier;
     try std.testing.expectEqualStrings("u8", a.tokenText(array_type.tok_index));
     const elements = a.extra.items[array.elements.start..][0..array.elements.len];
-    try std.testing.expectEqual(@as(i64, 3), a.nodes.items[elements[0]].integer.value);
-    try std.testing.expectEqual(@as(i64, 8), a.nodes.items[elements[1]].integer.value);
-    try std.testing.expectEqual(@as(i64, 5), a.nodes.items[elements[2]].integer.value);
+    try std.testing.expectEqual(@as(u64, 3), a.nodes.items[elements[0]].integer.value);
+    try std.testing.expectEqual(@as(u64, 8), a.nodes.items[elements[1]].integer.value);
+    try std.testing.expectEqual(@as(u64, 5), a.nodes.items[elements[2]].integer.value);
 
     const constant = a.nodes.items[roots[1]].var_decl;
     try std.testing.expectEqualStrings("value", a.tokenText(constant.name));
@@ -737,7 +751,7 @@ test "named functions compose with conditionals returns and calls" {
     const returned = a.nodes.items[a.extra.items[consequence.start]].return_expr.expression;
     try std.testing.expectEqual(@as(u32, 2), a.nodes.items[returned].call.arguments.len);
     const alternative = a.nodes.items[conditional.alternative.?].return_expr.expression;
-    try std.testing.expectEqual(@as(i64, 0), a.nodes.items[a.nodes.items[alternative].index_expr.index].integer.value);
+    try std.testing.expectEqual(@as(u64, 0), a.nodes.items[a.nodes.items[alternative].index_expr.index].integer.value);
     const empty = a.nodes.items[roots[1]].func_lit;
     try std.testing.expectEqualStrings("empty", a.tokenText(empty.signature.name));
     try std.testing.expect(empty.signature.args == null);
@@ -759,6 +773,7 @@ test "named functions compose with conditionals returns and calls" {
 test "malformed expressions lists and signatures return errors" {
     const allocator = std.testing.allocator;
     const cases = .{
+        .{ "18446744073709551616;", ParseError.Overflow },
         .{ "[1", ParseError.ExpectedRightBracket },
         .{ "[", ParseError.ExpectedArraySize },
         .{ "[]u8{};", ParseError.ExpectedArraySize },
@@ -867,10 +882,10 @@ test "parse expression" {
     const child_right = a.nodes.items[right_node.right].integer.value;
 
     try std.testing.expectEqualStrings("+", op.?);
-    try std.testing.expectEqual(@as(i64, 2), left_token);
+    try std.testing.expectEqual(@as(u64, 2), left_token);
     try std.testing.expectEqualStrings("*", right_token.?);
-    try std.testing.expectEqual(@as(i64, 4), child_left);
-    try std.testing.expectEqual(@as(i64, 2), child_right);
+    try std.testing.expectEqual(@as(u64, 4), child_left);
+    try std.testing.expectEqual(@as(u64, 2), child_right);
 }
 
 test "parse prefix" {
@@ -900,7 +915,7 @@ test "parse prefix" {
     const right = a.nodes.items[root.right].integer.value;
 
     try std.testing.expectEqualStrings("-", op.?);
-    try std.testing.expectEqual(@as(i64, 5), right);
+    try std.testing.expectEqual(@as(u64, 5), right);
 }
 
 test "parse if expression" {
@@ -936,7 +951,7 @@ test "parse if expression" {
     const alt_return = a.nodes.items[alt_return_idx].return_expr;
     const alt = a.nodes.items[alt_return.expression].integer.value;
 
-    try std.testing.expectEqual(@as(i64, 0), consq);
-    try std.testing.expectEqual(@as(i64, 1), alt);
+    try std.testing.expectEqual(@as(u64, 0), consq);
+    try std.testing.expectEqual(@as(u64, 1), alt);
     try std.testing.expectEqualStrings(">", cond_op.?);
 }

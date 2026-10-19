@@ -326,7 +326,27 @@ pub const Analyzer = struct {
                     .variability = elements_variability,
                 };
             },
-            .prefix => return error.UnsupportedExpression,
+            .prefix => |prefix| {
+                switch (prefix.operator) {
+                    .bang => {
+                        const type_id = self.types.primitiveId(.bool);
+                        const right_info =
+                            try self.checkExpression(prefix.right, type_id);
+
+                        if (right_info.type_id != type_id) {
+                            return error.TypeMismatch;
+                        }
+
+                        return .{
+                            .type_id = type_id,
+                            .variability = right_info.variability,
+                        };
+                    },
+                    // TODO
+                    .minus => return error.UnsupportedExpression,
+                    else => return error.UnsupportedExpression,
+                }
+            },
             .infix => |infix| {
                 const is_comparison = switch (infix.operator) {
                     .plus, .minus, .asterisk, .slash => false,
@@ -623,6 +643,10 @@ test "function bodies check declarations and returns" {
         .{
             .source = "fn f(uniform x: u32) uniform u8 { return x; };",
             .expected = error.TypeMismatch,
+        },
+        .{
+            .source = "fn f() uniform u64 { return 18446744073709551615; };",
+            .expected = null,
         },
         .{
             .source =
