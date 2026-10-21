@@ -194,13 +194,57 @@ pub const Analyzer = struct {
         }
     }
 
+    /// Checks preceding statements and returns the final node for value checking.
+    /// The caller owns the block's scope. Early returns need flow analysis first.
+    fn checkValueBlockStatements(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!u32 {
+        const block = switch (self.ast.nodes.items[index]) {
+            .block => |block| block,
+            else => return error.UnsupportedExpression,
+        };
+        const statements = self.ast.extra.items[block.statements.start..][0..block.statements.len];
+        if (statements.len == 0) return error.UnsupportedExpression;
+
+        for (statements[0 .. statements.len - 1]) |statement| {
+            if (self.ast.nodes.items[statement] == .return_expr) {
+                return error.UnsupportedExpression;
+            }
+            try self.checkStatement(statement, context);
+        }
+        return statements[statements.len - 1];
+    }
+
+    /// A value block yields its final expression, including its written semicolon.
+    fn checkValueBlock(
+        self: *Analyzer,
+        index: u32,
+        expected_type: ?TypeID,
+        context: CheckContext,
+    ) AnalyzeError!ExpressionInfo {
+        try self.symbols.enterScope(self.allocator);
+        defer self.symbols.leaveScope() catch unreachable;
+
+        const value = try self.checkValueBlockStatements(index, context);
+        return self.checkExpression(value, expected_type, context);
+    }
+
+    /// Discovers a branch's result type with its local declarations in scope.
+    fn valueBlockTypeHint(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!?TypeID {
+        try self.symbols.enterScope(self.allocator);
+        defer self.symbols.leaveScope() catch unreachable;
+
+        const value = try self.checkValueBlockStatements(index, context);
+        return self.expressionTypeHint(value, context);
+    }
+
     /// Returns expression facts and retains bindings for resolved identifier uses.
     /// expected_type supplies context for integer literals; identifier facts come from symbols.
+    /// context carries the enclosing function's return contract through child expressions.
     /// Several expression branches are still placeholders.
     fn checkExpression(
         self: *Analyzer,
         index: u32,
         expected_type: ?TypeID,
+        context: CheckContext,
     ) AnalyzeError!ExpressionInfo {
         const node = self.ast.nodes.items[index];
         switch (node) {
@@ -293,7 +337,7 @@ pub const Analyzer = struct {
                 var elements_variability: tree.Variability = undefined;
 
                 for (elements, 0..) |element, i| {
-                    const exp_info = try self.checkExpression(element, elements_type);
+                    const exp_info = try self.checkExpression(element, elements_type, context);
 
                     if (i == 0) {
                         elements_variability = exp_info.variability;
@@ -331,7 +375,7 @@ pub const Analyzer = struct {
                     .bang => {
                         const type_id = self.types.primitiveId(.bool);
                         const right_info =
-                            try self.checkExpression(prefix.right, type_id);
+                            try self.checkExpression(prefix.right, type_id, context);
 
                         if (right_info.type_id != type_id) {
                             return error.TypeMismatch;
@@ -360,7 +404,7 @@ pub const Analyzer = struct {
                     if (is_comparison) null else expected_type;
 
                 for ([_]u32{ infix.left, infix.right }) |operand| {
-                    if (try self.expressionTypeHint(operand)) |hint| {
+                    if (try self.expressionTypeHint(operand, context)) |hint| {
                         if (operand_hint) |known| {
                             if (known != hint) {
                                 return error.TypeMismatch;
@@ -375,9 +419,9 @@ pub const Analyzer = struct {
                     return error.UnsupportedNoType;
 
                 const left_info =
-                    try self.checkExpression(infix.left, operand_id);
+                    try self.checkExpression(infix.left, operand_id, context);
                 const right_info =
-                    try self.checkExpression(infix.right, operand_id);
+                    try self.checkExpression(infix.right, operand_id, context);
 
                 if (left_info.type_id != operand_id or
                     right_info.type_id != operand_id)
@@ -415,9 +459,9 @@ pub const Analyzer = struct {
                 };
             },
             .index_expr => |index_expr| {
-                const target = try self.checkExpression(index_expr.target, null);
+                const target = try self.checkExpression(index_expr.target, null, context);
                 const prim_id = self.types.primitiveId(.u32);
-                const index_parameter = try self.checkExpression(index_expr.index, prim_id);
+                const index_parameter = try self.checkExpression(index_expr.index, prim_id, context);
 
                 if (prim_id != index_parameter.type_id) {
                     return error.TypeMismatch;
@@ -436,20 +480,56 @@ pub const Analyzer = struct {
                     .variability = target.variability,
                 };
             },
+            .if_expr => |conditional| {
+                const alternative = conditional.alternative orelse
+                    return error.UnsupportedExpression;
+                const bool_id = self.types.primitiveId(.bool);
+                const condition = try self.checkExpression(conditional.condition, bool_id, context);
+                if (condition.type_id != bool_id) return error.TypeMismatch;
+                if (condition.variability != .uniform) return error.VariabilityMismatch;
+
+                const result_type = expected_type orelse
+                    try self.expressionTypeHint(index, context);
+                const consequence = try self.checkValueBlock(conditional.consequence, result_type, context);
+                const other = try self.checkValueBlock(
+                    alternative,
+                    result_type orelse consequence.type_id,
+                    context,
+                );
+                try checkAssignable(.{
+                    .type_id = consequence.type_id,
+                    .variability = consequence.variability,
+                }, other);
+                return consequence;
+            },
             .call => return error.UnsupportedExpression,
             else => return error.UnsupportedExpression,
         }
     }
 
-    fn expressionTypeHint(self: *Analyzer, index: u32) AnalyzeError!?TypeID {
+    fn expressionTypeHint(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!?TypeID {
         switch (self.ast.nodes.items[index]) {
             .integer => return null,
+
+            .if_expr => |conditional| {
+                const alternative = conditional.alternative orelse
+                    return error.UnsupportedExpression;
+                const left = try self.valueBlockTypeHint(conditional.consequence, context);
+                const right = try self.valueBlockTypeHint(alternative, context);
+                if (left) |left_id| {
+                    if (right) |right_id| {
+                        if (left_id != right_id) return error.TypeMismatch;
+                    }
+                    return left_id;
+                }
+                return right;
+            },
 
             .infix => |infix| {
                 switch (infix.operator) {
                     .plus, .minus, .asterisk, .slash => {
-                        const left = try self.expressionTypeHint(infix.left);
-                        const right = try self.expressionTypeHint(infix.right);
+                        const left = try self.expressionTypeHint(infix.left, context);
+                        const right = try self.expressionTypeHint(infix.right, context);
 
                         if (left) |left_id| {
                             if (right) |right_id| {
@@ -469,7 +549,7 @@ pub const Analyzer = struct {
                 }
             },
 
-            else => return (try self.checkExpression(index, null)).type_id,
+            else => return (try self.checkExpression(index, null, context)).type_id,
         }
     }
 
@@ -482,7 +562,7 @@ pub const Analyzer = struct {
                     var_type = try self.resolveTypeAnnotation(type_expr);
                 }
 
-                const decl_info = try self.checkExpression(var_node.initializer, var_type);
+                const decl_info = try self.checkExpression(var_node.initializer, var_type, context);
 
                 const val_info: ValueInfo = .{
                     .type_id = var_type orelse decl_info.type_id,
@@ -523,7 +603,7 @@ pub const Analyzer = struct {
             .prefix,
             .call,
             .if_expr,
-            => _ = try self.checkExpression(index, null),
+            => _ = try self.checkExpression(index, null, context),
         }
     }
 
@@ -542,6 +622,7 @@ pub const Analyzer = struct {
         const actual = try self.checkExpression(
             returned.expression,
             function.return_type,
+            context,
         );
 
         const expected: ValueInfo = .{
@@ -743,6 +824,150 @@ test "function bodies check declarations and returns" {
     }
 }
 
+test "if expressions yield scoped branch values" {
+    const Lexer = @import("token.zig").Lexer;
+    const Parser = @import("parser.zig").Parser;
+    const allocator = std.testing.allocator;
+    const cases = [_]struct {
+        source: [:0]const u8,
+        expected: ?AnalyzeError,
+    }{
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { uniform result: u8 = if (flag) { 3; } else { 8; }; return result; };",
+            .expected = null,
+        },
+        .{
+            .source =
+            \\fn f(uniform flag: bool) uniform u8 {
+            \\    uniform result: u8 = if (flag) {
+            \\        uniform local: u8 = 3;
+            \\        local;
+            \\    } else {
+            \\        uniform local: u8 = 8;
+            \\        local;
+            \\    };
+            \\    uniform local: u8 = result;
+            \\    return local;
+            \\};
+            ,
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool, uniform x: u8) uniform u8 { uniform result := if (flag) { 3; } else { x; }; return result; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool, uniform x: u8) uniform u8 { uniform result := if (flag) { x; } else { 3; }; return result; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { uniform result := if (flag) { 3; } else { uniform local: u8 = 8; local; }; return result; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { return (if (flag) { 3; } else { 8; }) + 1; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool, uniform x: u8) uniform bool { return (if (flag) { 3; } else { 8; }) < x; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { return if (flag) { if (flag) { 3; } else { 8; } } else { 5; }; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool, varying x: u8, varying y: u8) varying u8 { return if (flag) { x; } else { y; }; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { uniform result: bool = if (flag) { !flag; } else { flag; }; return 1; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool, uniform x: u8) uniform u8 { if (flag) { x; } else { x; } return x; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: u8) uniform u8 { return if (flag) { 3; } else { 8; }; };",
+            .expected = error.TypeMismatch,
+        },
+        .{
+            .source = "fn f(varying flag: bool) uniform u8 { return if (flag) { 3; } else { 8; }; };",
+            .expected = error.VariabilityMismatch,
+        },
+        .{
+            .source = "fn f(uniform flag: bool, uniform x: u8, uniform y: u16) uniform u8 { return if (flag) { x; } else { y; }; };",
+            .expected = error.TypeMismatch,
+        },
+        .{
+            .source = "fn f(uniform flag: bool, uniform x: u8, varying y: u8) uniform u8 { return if (flag) { x; } else { y; }; };",
+            .expected = error.VariabilityMismatch,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { return if (flag) { 3; } else { 256; }; };",
+            .expected = error.IntegerOutOfRange,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { return if (flag) { 3; }; };",
+            .expected = error.UnsupportedExpression,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { return if (flag) {} else { 8; }; };",
+            .expected = error.UnsupportedExpression,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { return if (flag) { 3; } else {}; };",
+            .expected = error.UnsupportedExpression,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { return if (flag) { uniform local: u8 = 3; } else { 8; }; };",
+            .expected = error.UnsupportedExpression,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { uniform result: u8 = if (flag) { return 3; } else { 8; }; return result; };",
+            .expected = error.UnsupportedExpression,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { return if (flag) return 3; else { 8; }; };",
+            .expected = error.UnsupportedExpression,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { return if (flag) { return 1; 3; } else { 8; }; };",
+            .expected = error.UnsupportedExpression,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { uniform result := if (flag) { 3; } else { 8; }; return result; };",
+            .expected = error.UnsupportedNoType,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { return if (flag) { uniform local: u8 = 3; local; } else { local; }; };",
+            .expected = error.UnknownSymbol,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { uniform result: u8 = if (flag) { uniform local: u8 = 3; local; } else { 8; }; return local; };",
+            .expected = error.UnknownSymbol,
+        },
+    };
+
+    for (cases) |case| {
+        var lexer = Lexer.init(case.source);
+        var ast: tree.Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
+        defer ast.deinit(allocator);
+        var parser = try Parser.init(allocator, &ast, &lexer);
+        try parser.parse();
+
+        var analyzer = try Analyzer.init(allocator, &ast);
+        defer analyzer.deinit();
+        if (case.expected) |expected| {
+            try std.testing.expectError(expected, analyzer.analyze());
+        } else {
+            try analyzer.analyze();
+        }
+        try std.testing.expectEqual(@as(u32, 0), analyzer.symbols.current);
+    }
+}
+
 test "array literals resolve element type and length" {
     const Lexer = @import("token.zig").Lexer;
     const Parser = @import("parser.zig").Parser;
@@ -757,7 +982,7 @@ test "array literals resolve element type and length" {
     var analyzer = try Analyzer.init(allocator, &ast);
     defer analyzer.deinit();
     const root = ast.extra.items[ast.roots.start];
-    const info = try analyzer.checkExpression(root, null);
+    const info = try analyzer.checkExpression(root, null, .{});
     const array_type = analyzer.types.entries.items[info.type_id].array;
 
     try std.testing.expectEqual(@as(u32, 3), array_type.len);
