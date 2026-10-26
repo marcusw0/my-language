@@ -14,7 +14,10 @@ const SemanticError = error{
     ExpectedErrorType,
     ExpectedVariability,
     InvalidCharacter,
+    InvalidArguments,
     UnsupportedRootNode,
+    MissingReturn,
+    ExpectedBool,
 };
 
 const AnalyzeError = error{
@@ -48,6 +51,11 @@ const FuncContext = struct {
 const CheckContext = struct {
     /// Enclosing function's return contract; null outside a function.
     function: ?FuncContext = null,
+};
+
+const Flow = enum {
+    continues,
+    returns,
 };
 
 pub const Analyzer = struct {
@@ -169,8 +177,7 @@ pub const Analyzer = struct {
                 try self.resolveTypeAnnotation(type_expr)
             else
                 null;
-        if (return_type) |exists| {
-            _ = exists;
+        if (return_type) |_| {
             if (func.signature.return_variability == null) {
                 return AnalyzeError.ExpectedVariability;
             }
@@ -182,16 +189,32 @@ pub const Analyzer = struct {
                 .return_variability = func.signature.return_variability,
             },
         };
-        try self.checkBlock(func.body, context);
+        const flow = try self.checkBlock(func.body, context);
+        if (return_type) |_| {
+            if (flow != .returns) {
+                return error.MissingReturn;
+            }
+        }
     }
 
     /// Visits a block's statements using the caller's active scope and checking context.
-    fn checkBlock(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!void {
+    fn checkBlock(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!Flow {
+        var flow: Flow = .continues;
         const block = self.ast.nodes.items[index].block;
         const statements = self.ast.extra.items[block.statements.start..][0..block.statements.len];
         for (statements) |idx| {
-            try self.checkStatement(idx, context);
+            const result = try self.checkStatement(idx, context);
+            if (result == .returns) flow = .returns;
         }
+        return flow;
+    }
+
+    /// Both conditional forms require a uniform bool condition.
+    fn checkCondition(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!void {
+        const bool_id = self.types.primitiveId(.bool);
+        const condition = try self.checkExpression(index, bool_id, context);
+        if (condition.type_id != bool_id) return error.ExpectedBool;
+        if (condition.variability != .uniform) return error.VariabilityMismatch;
     }
 
     /// Checks preceding statements and returns the final node for value checking.
@@ -208,7 +231,10 @@ pub const Analyzer = struct {
             if (self.ast.nodes.items[statement] == .return_expr) {
                 return error.UnsupportedExpression;
             }
-            try self.checkStatement(statement, context);
+            const flow = try self.checkStatement(statement, context);
+            if (flow == .returns) {
+                return error.UnsupportedExpression;
+            }
         }
         return statements[statements.len - 1];
     }
@@ -483,10 +509,7 @@ pub const Analyzer = struct {
             .if_expr => |conditional| {
                 const alternative = conditional.alternative orelse
                     return error.UnsupportedExpression;
-                const bool_id = self.types.primitiveId(.bool);
-                const condition = try self.checkExpression(conditional.condition, bool_id, context);
-                if (condition.type_id != bool_id) return error.TypeMismatch;
-                if (condition.variability != .uniform) return error.VariabilityMismatch;
+                try self.checkCondition(conditional.condition, context);
 
                 const result_type = expected_type orelse
                     try self.expressionTypeHint(index, context);
@@ -502,7 +525,52 @@ pub const Analyzer = struct {
                 }, other);
                 return consequence;
             },
-            .call => return error.UnsupportedExpression,
+            .call => |call| {
+                const func = switch (self.ast.nodes.items[call.func]) {
+                    .identifier => |ident| ident,
+                    else => return error.UnsupportedExpression,
+                };
+                const name = self.ast.tokenText(func.tok_index);
+                const sym_id = self.symbols.resolve(name);
+
+                var call_symbol: sym.SymbolTable.Symbol = undefined;
+                if (sym_id) |i| {
+                    call_symbol = self.symbols.symbols.items[i];
+                    self.node_symbols[call.func] = i;
+                } else {
+                    return error.UnknownSymbol;
+                }
+                if (call_symbol.declaration != .func) return error.UnsupportedExpression;
+
+                const func_lit = self.ast.nodes.items[call_symbol.declaration.func].func_lit;
+                if (func_lit.signature.args) |args| {
+                    if (args.len != call.arguments.len) return error.InvalidArguments;
+                    for (0..args.len) |idx| {
+                        const arg_param = self.ast.parameters.items[args.start + idx];
+
+                        if (arg_param.variability == null) return error.ExpectedVariability;
+
+                        const arg_type_id = try self.resolveTypeAnnotation(arg_param.type_expr);
+                        const call_idx = self.ast.extra.items[call.arguments.start + idx];
+                        const call_arg = try self.checkExpression(call_idx, arg_type_id, context);
+
+                        try checkAssignable(.{ .type_id = arg_type_id, .variability = arg_param.variability.? }, call_arg);
+                    }
+                } else {
+                    if (call.arguments.len != 0) return error.InvalidArguments;
+                }
+
+                const return_annotation = func_lit.signature.return_type orelse
+                    return error.UnsupportedNoType;
+                const return_type = try self.resolveTypeAnnotation(return_annotation);
+                const return_variability = func_lit.signature.return_variability orelse
+                    return error.ExpectedVariability;
+
+                return .{
+                    .type_id = return_type,
+                    .variability = return_variability,
+                };
+            },
             else => return error.UnsupportedExpression,
         }
     }
@@ -553,7 +621,7 @@ pub const Analyzer = struct {
         }
     }
 
-    fn checkStatement(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!void {
+    fn checkStatement(self: *Analyzer, index: u32, context: CheckContext) AnalyzeError!Flow {
         const statement = self.ast.nodes.items[index];
         switch (statement) {
             .var_decl => |var_node| {
@@ -581,18 +649,37 @@ pub const Analyzer = struct {
                 self.node_symbols[index] = id;
             },
 
-            .func_lit => try self.checkFunction(index),
+            .func_lit => {
+                try self.checkFunction(index);
+                return .continues;
+            },
 
-            .return_expr => try self.checkReturn(index, context),
+            .return_expr => {
+                try self.checkReturn(index, context);
+                return .returns;
+            },
 
             .block => {
                 try self.symbols.enterScope(self.allocator);
                 defer self.symbols.leaveScope() catch unreachable;
 
-                try self.checkBlock(index, context);
+                return try self.checkBlock(index, context);
             },
 
             .optional, .err_union => return error.UnsupportedExpression,
+            .if_expr => |conditional| {
+                try self.checkCondition(conditional.condition, context);
+                const consequence = try self.checkStatement(conditional.consequence, context);
+                if (conditional.alternative) |alt| {
+                    const alternative = try self.checkStatement(alt, context);
+                    if (consequence == .returns and alternative == .returns) {
+                        return .returns;
+                    } else {
+                        return .continues;
+                    }
+                }
+                return .continues;
+            },
 
             .identifier,
             .integer,
@@ -602,9 +689,9 @@ pub const Analyzer = struct {
             .index_expr,
             .prefix,
             .call,
-            .if_expr,
             => _ = try self.checkExpression(index, null, context),
         }
+        return .continues;
     }
 
     /// Checks function context and the returned expression.
@@ -824,6 +911,157 @@ test "function bodies check declarations and returns" {
     }
 }
 
+test "named calls check arguments and return facts" {
+    const Lexer = @import("token.zig").Lexer;
+    const Parser = @import("parser.zig").Parser;
+    const allocator = std.testing.allocator;
+    const cases = [_]struct {
+        source: [:0]const u8,
+        expected: ?AnalyzeError,
+    }{
+        .{
+            .source = "fn zero() uniform u8 { return 3; }; fn f() uniform u8 { return zero(); };",
+            .expected = null,
+        },
+        .{
+            .source =
+            \\fn first(uniform padding: u16) uniform u16 { return padding; };
+            \\fn id(uniform x: u8) uniform u8 { return x; };
+            \\fn f() uniform u8 { return id(3); };
+            ,
+            .expected = null,
+        },
+        .{
+            .source = "fn id(uniform x: u8) uniform u8 { return x; }; fn f() uniform u8 { return id(); };",
+            .expected = error.InvalidArguments,
+        },
+        .{
+            .source = "fn id(uniform x: u8) uniform u8 { return x; }; fn f(uniform x: u32) uniform u8 { return id(x); };",
+            .expected = error.TypeMismatch,
+        },
+        .{
+            .source = "fn id(uniform x: u8) uniform u8 { return x; }; fn f(varying x: u8) uniform u8 { return id(x); };",
+            .expected = error.VariabilityMismatch,
+        },
+        .{
+            .source = "fn f() uniform u8 { uniform x: u8 = 3; return x(); };",
+            .expected = error.UnsupportedExpression,
+        },
+        .{
+            .source = "fn f() uniform u8 { return (3)(); };",
+            .expected = error.UnsupportedExpression,
+        },
+    };
+
+    for (cases) |case| {
+        var lexer = Lexer.init(case.source);
+        var ast: tree.Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
+        defer ast.deinit(allocator);
+        var parser = try Parser.init(allocator, &ast, &lexer);
+        try parser.parse();
+
+        var analyzer = try Analyzer.init(allocator, &ast);
+        defer analyzer.deinit();
+        if (case.expected) |expected| {
+            try std.testing.expectError(expected, analyzer.analyze());
+        } else {
+            try analyzer.analyze();
+        }
+    }
+}
+
+test "statement ifs validate conditions and merge return flow" {
+    const Lexer = @import("token.zig").Lexer;
+    const Parser = @import("parser.zig").Parser;
+    const allocator = std.testing.allocator;
+    const cases = [_]struct {
+        source: [:0]const u8,
+        expected: ?AnalyzeError,
+    }{
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { if (flag) { return 3; } else { return 8; } };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { if (flag) return 3; else return 8; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { if (flag) { if (flag) return 3; else return 8; } else { return 5; } };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { if (flag) { return 3; } return 8; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) { if (flag) {} else {} };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { if (flag) { return 3; } };",
+            .expected = error.MissingReturn,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { if (flag) { return 3; } else {} };",
+            .expected = error.MissingReturn,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { if (flag) {} else { return 8; } };",
+            .expected = error.MissingReturn,
+        },
+        .{
+            .source = "fn f(uniform flag: u8) uniform u8 { if (flag) { return 3; } else { return 8; } };",
+            .expected = error.ExpectedBool,
+        },
+        .{
+            .source = "fn f(varying flag: bool) uniform u8 { if (flag) { return 3; } else { return 8; } };",
+            .expected = error.VariabilityMismatch,
+        },
+        .{
+            .source = "fn f(uniform flag: bool, uniform x: u32) uniform u8 { if (flag) { return 3; } else { return x; } };",
+            .expected = error.TypeMismatch,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { if (flag) { uniform local: u8 = 3; } else { uniform local: u8 = 8; } uniform local: u8 = 5; return local; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f(uniform flag: bool) uniform u8 { if (flag) { uniform local: u8 = 3; } else { local; } return 8; };",
+            .expected = error.UnknownSymbol,
+        },
+        .{
+            .source = "fn f() uniform u8 { fn inner() uniform u8 { return 3; }; };",
+            .expected = error.MissingReturn,
+        },
+        .{
+            .source = "fn f() uniform u8 { return 3; uniform local: u8 = 8; };",
+            .expected = null,
+        },
+        .{
+            .source = "fn f() uniform u8 { return 3; missing; };",
+            .expected = error.UnknownSymbol,
+        },
+    };
+
+    for (cases) |case| {
+        var lexer = Lexer.init(case.source);
+        var ast: tree.Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
+        defer ast.deinit(allocator);
+        var parser = try Parser.init(allocator, &ast, &lexer);
+        try parser.parse();
+
+        var analyzer = try Analyzer.init(allocator, &ast);
+        defer analyzer.deinit();
+        if (case.expected) |expected| {
+            try std.testing.expectError(expected, analyzer.analyze());
+        } else {
+            try analyzer.analyze();
+        }
+        try std.testing.expectEqual(@as(u32, 0), analyzer.symbols.current);
+    }
+}
+
 test "if expressions yield scoped branch values" {
     const Lexer = @import("token.zig").Lexer;
     const Parser = @import("parser.zig").Parser;
@@ -890,7 +1128,7 @@ test "if expressions yield scoped branch values" {
         },
         .{
             .source = "fn f(uniform flag: u8) uniform u8 { return if (flag) { 3; } else { 8; }; };",
-            .expected = error.TypeMismatch,
+            .expected = error.ExpectedBool,
         },
         .{
             .source = "fn f(varying flag: bool) uniform u8 { return if (flag) { 3; } else { 8; }; };",
@@ -997,7 +1235,8 @@ test "function annotations validate parameter records and return types" {
     const Lexer = @import("token.zig").Lexer;
     const Parser = @import("parser.zig").Parser;
     const cases = [_]struct { source: [:0]const u8, expected: ?SemanticError }{
-        .{ .source = "fn first(uniform x: u8, varying y: f64) uniform u8!error {}; fn second(varying z: bool) varying ?u8 {};", .expected = null },
+        .{ .source = "fn first(uniform x: u8, varying y: f64) uniform u8!error {};", .expected = error.MissingReturn },
+        .{ .source = "fn second(varying z: bool) varying ?u8 {};", .expected = error.MissingReturn },
         .{ .source = "fn empty() {};", .expected = null },
         .{ .source = "fn bad(uniform x: banana) uniform u8 {};", .expected = error.ExpectedPrimitiveType },
         .{ .source = "fn bad() varying banana {};", .expected = error.ExpectedPrimitiveType },
@@ -1026,12 +1265,12 @@ test "function annotations require explicit variability" {
     const Lexer = @import("token.zig").Lexer;
     const Parser = @import("parser.zig").Parser;
     const cases = [_]struct { source: [:0]const u8, expected: ?SemanticError }{
-        .{ .source = "fn f(uniform x: u8, varying y: u8) varying u8 {};", .expected = null },
-        .{ .source = "fn f() uniform u8 {};", .expected = null },
-        .{ .source = "fn f() uniform ?u8 {};", .expected = null },
-        .{ .source = "fn f() varying ?u8 {};", .expected = null },
-        .{ .source = "fn f() uniform u8!error {};", .expected = null },
-        .{ .source = "fn f() varying u8!error {};", .expected = null },
+        .{ .source = "fn f(uniform x: u8, varying y: u8) varying u8 {};", .expected = error.MissingReturn },
+        .{ .source = "fn f() uniform u8 {};", .expected = error.MissingReturn },
+        .{ .source = "fn f() uniform ?u8 {};", .expected = error.MissingReturn },
+        .{ .source = "fn f() varying ?u8 {};", .expected = error.MissingReturn },
+        .{ .source = "fn f() uniform u8!error {};", .expected = error.MissingReturn },
+        .{ .source = "fn f() varying u8!error {};", .expected = error.MissingReturn },
         .{ .source = "fn f(uniform x: u8) {};", .expected = null },
         .{ .source = "fn f() {};", .expected = null },
         .{ .source = "fn f(x: u8) uniform u8 {};", .expected = error.ExpectedVariability },
