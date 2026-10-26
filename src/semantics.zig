@@ -526,7 +526,10 @@ pub const Analyzer = struct {
                 return consequence;
             },
             .call => |call| {
-                const func = self.ast.nodes.items[call.func].identifier;
+                const func = switch (self.ast.nodes.items[call.func]) {
+                    .identifier => |ident| ident,
+                    else => return error.UnsupportedExpression,
+                };
                 const name = self.ast.tokenText(func.tok_index);
                 const sym_id = self.symbols.resolve(name);
 
@@ -537,20 +540,36 @@ pub const Analyzer = struct {
                 } else {
                     return error.UnknownSymbol;
                 }
-                if (call_symbol.declaration != .func) return error.UnknownSymbol;
+                if (call_symbol.declaration != .func) return error.UnsupportedExpression;
 
                 const func_lit = self.ast.nodes.items[call_symbol.declaration.func].func_lit;
                 if (func_lit.signature.args) |args| {
                     if (args.len != call.arguments.len) return error.InvalidArguments;
                     for (0..args.len) |idx| {
                         const arg_param = self.ast.parameters.items[args.start + idx];
+
+                        if (arg_param.variability == null) return error.ExpectedVariability;
+
                         const arg_type_id = try self.resolveTypeAnnotation(arg_param.type_expr);
                         const call_idx = self.ast.extra.items[call.arguments.start + idx];
                         const call_arg = try self.checkExpression(call_idx, arg_type_id, context);
+
+                        try checkAssignable(.{ .type_id = arg_type_id, .variability = arg_param.variability.? }, call_arg);
                     }
                 } else {
                     if (call.arguments.len != 0) return error.InvalidArguments;
                 }
+
+                const return_annotation = func_lit.signature.return_type orelse
+                    return error.UnsupportedNoType;
+                const return_type = try self.resolveTypeAnnotation(return_annotation);
+                const return_variability = func_lit.signature.return_variability orelse
+                    return error.ExpectedVariability;
+
+                return .{
+                    .type_id = return_type,
+                    .variability = return_variability,
+                };
             },
             else => return error.UnsupportedExpression,
         }
@@ -884,6 +903,65 @@ test "function bodies check declarations and returns" {
         var analyzer = try Analyzer.init(std.testing.allocator, &ast);
         defer analyzer.deinit();
 
+        if (case.expected) |expected| {
+            try std.testing.expectError(expected, analyzer.analyze());
+        } else {
+            try analyzer.analyze();
+        }
+    }
+}
+
+test "named calls check arguments and return facts" {
+    const Lexer = @import("token.zig").Lexer;
+    const Parser = @import("parser.zig").Parser;
+    const allocator = std.testing.allocator;
+    const cases = [_]struct {
+        source: [:0]const u8,
+        expected: ?AnalyzeError,
+    }{
+        .{
+            .source = "fn zero() uniform u8 { return 3; }; fn f() uniform u8 { return zero(); };",
+            .expected = null,
+        },
+        .{
+            .source =
+            \\fn first(uniform padding: u16) uniform u16 { return padding; };
+            \\fn id(uniform x: u8) uniform u8 { return x; };
+            \\fn f() uniform u8 { return id(3); };
+            ,
+            .expected = null,
+        },
+        .{
+            .source = "fn id(uniform x: u8) uniform u8 { return x; }; fn f() uniform u8 { return id(); };",
+            .expected = error.InvalidArguments,
+        },
+        .{
+            .source = "fn id(uniform x: u8) uniform u8 { return x; }; fn f(uniform x: u32) uniform u8 { return id(x); };",
+            .expected = error.TypeMismatch,
+        },
+        .{
+            .source = "fn id(uniform x: u8) uniform u8 { return x; }; fn f(varying x: u8) uniform u8 { return id(x); };",
+            .expected = error.VariabilityMismatch,
+        },
+        .{
+            .source = "fn f() uniform u8 { uniform x: u8 = 3; return x(); };",
+            .expected = error.UnsupportedExpression,
+        },
+        .{
+            .source = "fn f() uniform u8 { return (3)(); };",
+            .expected = error.UnsupportedExpression,
+        },
+    };
+
+    for (cases) |case| {
+        var lexer = Lexer.init(case.source);
+        var ast: tree.Ast = .{ .source = lexer.buffer, .roots = .{ .start = 0, .len = 0 } };
+        defer ast.deinit(allocator);
+        var parser = try Parser.init(allocator, &ast, &lexer);
+        try parser.parse();
+
+        var analyzer = try Analyzer.init(allocator, &ast);
+        defer analyzer.deinit();
         if (case.expected) |expected| {
             try std.testing.expectError(expected, analyzer.analyze());
         } else {
