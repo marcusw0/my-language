@@ -1,6 +1,12 @@
 ## My language
 
-I currently have no name for my language. Details and syntax is still being determined and the parsing is currently in development.
-If you come across this language and are interested in seeing features added. Please feel free to open up a PR or issue or get in touch with me and
-we can see about getting it added!
-Give the current language a try by running `zig build run -- <file>` on a file with some of my language.
+An unnamed systems language and compiler written in Zig, with a long-term focus on vector/data-parallel programming while keeping scalar execution valid.
+
+The compiler currently lexes, parses, and performs semantic analysis for a growing subset of the language, including functions, variables, arrays, indexing, operators, conditionals, and named calls. Syntax and semantics are still evolving; code generation and program execution are not implemented yet.
+
+Build and check a source file from this directory:
+
+```sh
+zig build
+./zig-out/bin/my_language <file>
+```
